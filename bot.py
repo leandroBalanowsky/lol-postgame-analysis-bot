@@ -43,6 +43,9 @@ TONO = os.getenv("TONO", "+0Hz")
 INTERVALO = int(os.getenv("INTERVALO_SEGUNDOS") or 90)  # cada cuánto revisa partidas nuevas
 # Partidas que terminaron hace más que esto no se anuncian (ej: el bot estuvo apagado)
 MAX_ANTIGUEDAD_MIN = int(os.getenv("MAX_ANTIGUEDAD_MIN") or 20)
+# Rol para el peor vinculado de la última derrota; lo conserva hasta que otro vinculado salga peor.
+# Vacío = sin rol. Si no existe en el servidor, el bot lo crea (necesita el permiso Gestionar roles).
+ROL_PEOR = os.getenv("ROL_PEOR", "El más manco").strip()
 
 BASE_DIR = Path(__file__).parent
 DATOS = BASE_DIR / "datos.json"
@@ -229,7 +232,52 @@ def armar_embed(res: Resultado) -> discord.Embed:
     return embed
 
 
-async def anunciar(res: Resultado, canal_voz: discord.VoiceChannel | None,
+async def pasar_rol_peor(guild: discord.Guild, j: Jugador) -> discord.Member | None:
+    """Da el rol ROL_PEOR al peor si está vinculado y se lo saca a quien lo tenía.
+
+    Devuelve el miembro que recibió el rol, o None si no hubo cambio (peor sin vincular,
+    no está en el servidor, ya lo tenía, o el bot no tiene permiso).
+    """
+    did = vinculo_de_puuid(j.puuid)
+    if not ROL_PEOR or not did:
+        return None
+    try:
+        miembro = guild.get_member(int(did)) or await guild.fetch_member(int(did))
+    except discord.NotFound:
+        return None
+    try:
+        rol = discord.utils.get(guild.roles, name=ROL_PEOR)
+        if rol is None:
+            rol = await guild.create_role(name=ROL_PEOR, colour=discord.Colour(0x8B5A2B),
+                                          reason="Rol para el peor de la última derrota")
+            log.info("Rol %s creado en %s", ROL_PEOR, guild.name)
+        if rol in miembro.roles:
+            return None
+
+        # Sacárselo al anterior (guardado en datos, porque el bot no ve a todos los miembros)
+        # y a cualquier otro que lo tenga y el bot conozca
+        anteriores = {m for m in rol.members if m.id != miembro.id}
+        previo = datos.setdefault("rol_peor", {}).get(str(guild.id))
+        if previo and previo != did:
+            try:
+                anteriores.add(guild.get_member(int(previo)) or await guild.fetch_member(int(previo)))
+            except discord.NotFound:
+                pass
+        for m in anteriores:
+            await m.remove_roles(rol, reason="Otro salió peor en una derrota")
+
+        await miembro.add_roles(rol, reason="Peor del equipo en la última derrota")
+    except discord.Forbidden:
+        log.warning("Sin permiso para gestionar el rol %s en %s (hace falta 'Gestionar roles' y que "
+                    "el rol del bot esté por encima)", ROL_PEOR, guild.name)
+        return None
+    datos["rol_peor"][str(guild.id)] = did
+    guardar_datos()
+    log.info("Rol %s pasó a %s en %s", ROL_PEOR, miembro.display_name, guild.name)
+    return miembro
+
+
+async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.VoiceChannel | None,
                    canal_texto: discord.abc.Messageable | None):
     j = res.destacado
     texto = (MENSAJE_MEJOR if res.gano else MENSAJE_PEOR).format(
@@ -239,10 +287,20 @@ async def anunciar(res: Resultado, canal_voz: discord.VoiceChannel | None,
         kills=j.kills, muertes=j.deaths, asistencias=j.assists,
         kda=j.kda_texto, puntaje=round(j.puntaje),
     )
+    contenido = f"📢 {texto}"
+    if not res.gano:
+        try:
+            nuevo = await pasar_rol_peor(guild, j)
+            if nuevo:
+                contenido += f"\n🎖️ {nuevo.mention} ahora es **{ROL_PEOR}** hasta que otro lo supere."
+        except Exception:
+            log.exception("No se pudo pasar el rol %s", ROL_PEOR)
+
     destino = client.get_channel(CANAL_TEXTO_ID) if CANAL_TEXTO_ID else canal_texto
     if destino:
         try:
-            await destino.send(content=f"📢 {texto}", embed=armar_embed(res))
+            await destino.send(content=contenido, embed=armar_embed(res),
+                               allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
         except discord.HTTPException:
             log.exception("No se pudo mandar el resumen de texto")
     if canal_voz:
@@ -302,7 +360,7 @@ async def revisar_jugador(miembro: discord.Member, canal: discord.VoiceChannel):
     log.info("Partida nueva %s de %s (%s): %s %s (%.0f pts)", ultima, miembro.display_name,
              "victoria" if res.gano else "derrota", "mejor" if res.gano else "peor",
              jugador_texto(res.destacado), res.destacado.puntaje)
-    await anunciar(res, canal, canal)
+    await anunciar(res, canal.guild, canal, canal)
 
 
 sin_conexion = False  # para avisar una sola vez en el log mientras Riot no responde
@@ -423,7 +481,7 @@ async def cmd_analizar(interaction: discord.Interaction, usuario: discord.Member
     else:
         await interaction.followup.send("📊 Resultado:")
     voz = usuario.voice.channel if usuario.voice else None
-    await anunciar(res, voz, interaction.channel)
+    await anunciar(res, interaction.guild, voz, interaction.channel)
 
 
 # ---------------------------------------------------------------- arranque

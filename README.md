@@ -9,6 +9,8 @@ When a linked player who is in one of our Discord voice channels finishes a matc
 
 The recap is posted as a text message with a per-player breakdown and is also read aloud in the voice channel with text-to-speech. The bot's messages and commands are in Spanish.
 
+After a loss, if the lowest-scoring player is an opted-in member, they get a Discord role (by default "El más manco") until another opted-in member scores lowest in a later loss. Players who haven't opted in never get the role.
+
 ## Riot API usage
 
 | Endpoint | Purpose | When |
@@ -27,7 +29,7 @@ The recap is posted as a text message with a per-player breakdown and is also re
 
 - Players opt in explicitly with `/vincular Name#TAG` (link) and can remove their data at any time with `/desvincular` (unlink).
 - **Only opted-in players are named**, using their summoner name. Every other participant of the match (teammates or opponents outside the group) is referred to only by the champion they played, for example "el jugador de Wukong" ("the Wukong player"). Their Riot IDs and PUUIDs are never shown, logged or stored.
-- The only stored data (`datos.json`, local) is the link between a Discord user ID and the player's Riot ID/PUUID, the ID of the last processed match, and a list of already announced match IDs (to avoid duplicates). Match data is not stored or shared.
+- The only stored data (`datos.json`, local) is the link between a Discord user ID and the player's Riot ID/PUUID, the ID of the last processed match, a list of already announced match IDs (to avoid duplicates) and, per Discord server, which linked member currently holds the "worst player" role. Match data is not stored or shared.
 - The API key is kept in a local `.env` file that is never committed or shared.
 
 ## How the score works
@@ -70,7 +72,7 @@ If a stat cannot be computed (a match shorter than 15 minutes, no lane opponent,
 
 Requirements: Python 3.10 or newer (3.12 recommended), a Discord bot token and a Riot API key.
 
-1. **Discord bot:** create an application at <https://discord.com/developers/applications> and copy the bot token. Invite it with the `bot` and `applications.commands` scopes and the *View Channels*, *Send Messages*, *Embed Links*, *Connect* and *Speak* permissions.
+1. **Discord bot:** create an application at <https://discord.com/developers/applications> and copy the bot token. Invite it with the `bot` and `applications.commands` scopes and the *View Channels*, *Send Messages*, *Embed Links*, *Connect*, *Speak* and *Manage Roles* permissions (the last one only for the "worst player" role).
 2. **Install:**
    ```bash
    python -m venv .venv
