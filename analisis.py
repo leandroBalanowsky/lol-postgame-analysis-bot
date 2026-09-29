@@ -42,6 +42,11 @@ class Jugador:
     dano_min: float
     vision_min: float
     kp: float  # participación en kills del equipo (0 a 1)
+    cs: int = 0
+    oro: int = 0
+    dano: int = 0  # daño total a campeones
+    dano_pct: float = 0.0  # parte del daño del equipo (0 a 1)
+    vision: int = 0  # puntaje de visión de Riot
     oro15_diff: float | None = None  # oro al minuto 15 menos el del rival de línea
     puntaje: float = 0.0
     notas: dict = field(default_factory=dict)  # nota (0 a 1) de cada estadística usada
@@ -64,12 +69,26 @@ class Jugador:
 
 
 @dataclass
+class TotalesEquipo:
+    kills: int
+    oro: int
+    torres: int
+    dragones: int
+    barones: int
+    larvas: int
+
+
+@dataclass
 class Resultado:
     match_id: str
     modo: str
+    cola: int  # queueId de Riot (420 = Solo/Dúo, 440 = Flex, 450 = ARAM...)
+    fin: int  # timestamp de fin (ms)
     minutos: float
     gano: bool
     equipo: list[Jugador]  # ordenado de mejor a peor
+    propio: TotalesEquipo
+    rival: TotalesEquipo
 
     @property
     def peor(self) -> Jugador:
@@ -164,6 +183,7 @@ def analizar(partida: dict, puuid: str, timeline: dict | None = None) -> Resulta
 
     minutos = max(1.0, info["gameDuration"] / 60)
     kills_equipo = sum(p["kills"] for p in del_equipo)
+    dano_equipo = sum(p["totalDamageDealtToChampions"] for p in del_equipo)
 
     def rival_de(p: dict) -> dict | None:
         pos = p.get("teamPosition", "")
@@ -190,6 +210,11 @@ def analizar(partida: dict, puuid: str, timeline: dict | None = None) -> Resulta
             dano_min=p["totalDamageDealtToChampions"] / minutos,
             vision_min=_vision(p) / minutos,
             kp=(p["kills"] + p["assists"]) / max(1, kills_equipo),
+            cs=p["totalMinionsKilled"] + p["neutralMinionsKilled"],
+            oro=p.get("goldEarned", 0),
+            dano=p["totalDamageDealtToChampions"],
+            dano_pct=p["totalDamageDealtToChampions"] / max(1, dano_equipo),
+            vision=p.get("visionScore", 0),
             oro15_diff=(oro_mio - oro_rival) if oro_mio is not None and oro_rival is not None else None,
         ))
 
@@ -231,7 +256,29 @@ def analizar(partida: dict, puuid: str, timeline: dict | None = None) -> Resulta
     return Resultado(
         match_id=partida["metadata"]["matchId"],
         modo=info.get("gameMode", ""),
+        cola=info.get("queueId", 0),
+        fin=info.get("gameEndTimestamp", 0),
         minutos=minutos,
         gano=yo["win"],
         equipo=equipo,
+        propio=_totales(info, participantes, yo["teamId"]),
+        rival=_totales(info, participantes, 300 - yo["teamId"]),  # los equipos son 100 y 200
+    )
+
+
+def _totales(info: dict, participantes: list[dict], team_id: int) -> TotalesEquipo:
+    jugadores = [p for p in participantes if p["teamId"] == team_id]
+    equipo = next((t for t in info.get("teams", []) if t["teamId"] == team_id), {})
+    objetivos = equipo.get("objectives", {})
+
+    def cant(nombre: str) -> int:
+        return objetivos.get(nombre, {}).get("kills", 0)
+
+    return TotalesEquipo(
+        kills=sum(p["kills"] for p in jugadores),
+        oro=sum(p.get("goldEarned", 0) for p in jugadores),
+        torres=cant("tower"),
+        dragones=cant("dragon"),
+        barones=cant("baron"),
+        larvas=cant("horde"),
     )

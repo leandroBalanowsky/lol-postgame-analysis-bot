@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 
-from analisis import Jugador, Resultado, analizar
+from analisis import Jugador, Resultado, TotalesEquipo, analizar
 from riot import ClaveInvalida, Riot, RiotError, SinConexion
 
 load_dotenv()
@@ -164,33 +165,71 @@ def jugador_texto(j: Jugador) -> str:
     return f"{nombre} con {campeon}" if nombre else f"el jugador de {campeon}"
 
 
-def armar_embed(res: Resultado, guild: discord.Guild) -> discord.Embed:
-    lineas = []
-    for j in res.equipo:
-        if j is res.destacado:
-            icono = "🏆" if res.gano else "💀"
-        else:
-            icono = "▫️"
-        stat = f"{j.vision_min:.1f} visión/min" if j.es_support else f"{j.farm_min:.1f} CS/min"
-        oro = f" · {j.oro15_diff:+.0f} oro@15" if j.oro15_diff is not None else ""
-        campeon = riot.nombre_campeon(j.campeon)
-        rol = f" · {j.rol}" if j.rol else ""
-        nombre = nombre_vinculado(j)
-        quien = f"**{nombre}** ({campeon}{rol})" if nombre else f"**{campeon}**{rol} *(sin vincular)*"
-        lineas.append(
-            f"{icono} {quien} "
-            f"— {j.kda_texto} · {stat} · {j.dano_min:.0f} daño/min · {j.kp:.0%} KP{oro} → **{j.puntaje:.0f}** pts"
-        )
+COLAS = {
+    420: "Clasificatoria Solo/Dúo", 440: "Clasificatoria Flexible", 400: "Normal (reclutamiento)",
+    430: "Normal (a ciegas)", 490: "Partida rápida", 450: "ARAM", 900: "URF", 1900: "URF",
+}
+NOMBRES_NOTAS = {
+    "kda": "KDA", "kp": "participación", "dano": "daño", "farm": "farm", "vision": "visión",
+    "oro15": "oro @15", "torres": "daño a torres", "aguante": "aguante", "objetivos": "objetivos",
+    "utilidad": "utilidad",
+}
+
+
+def _miles(n: float) -> str:
+    return f"{n / 1000:.1f}k"
+
+
+def _linea_equipo(t: TotalesEquipo) -> str:
+    return (f"{t.kills} kills · {_miles(t.oro)} oro · 🗼 Torres {t.torres} · 🐉 Dragones {t.dragones}"
+            f" · 🟣 Larvas {t.larvas} · 👿 Barones {t.barones}")
+
+
+def _ficha(j: Jugador) -> str:
+    """Estadísticas de un jugador, en tres renglones."""
+    lineas = [
+        f"⚔️ **{j.kda_texto}** (KDA {j.kda:.1f}) · KP {j.kp:.0%}",
+        f"🗡️ {_miles(j.dano)} daño ({j.dano_pct:.0%} del equipo) · 💰 {_miles(j.oro)} oro",
+        f"🌾 {j.cs} CS ({j.farm_min:.1f}/min) · 👁️ {j.vision} visión",
+    ]
+    if j.oro15_diff is not None:
+        lineas[-1] += f" · 📈 {j.oro15_diff:+,.0f} oro @15".replace(",", ".")
+    return "\n".join(lineas)
+
+
+def _por_que(j: Jugador) -> str:
+    """Las dos estadísticas en las que mejor y peor le fue al destacado (nota de 0 a 10)."""
+    orden = sorted(j.notas.items(), key=lambda x: x[1], reverse=True)
+
+    def texto(notas):
+        return ", ".join(f"{NOMBRES_NOTAS.get(m, m)} ({v * 10:.0f}/10)" for m, v in notas)
+
+    return f"✅ Lo mejor: {texto(orden[:2])}\n❌ Lo peor: {texto(orden[-2:][::-1])}"
+
+
+def armar_embed(res: Resultado) -> discord.Embed:
+    cola = COLAS.get(res.cola, res.modo.title())
     embed = discord.Embed(
-        title=("✅ Victoria" if res.gano else "❌ Derrota") + f" · {res.minutos:.0f} min",
-        description="\n".join(lineas),
+        title=("✅ Victoria" if res.gano else "❌ Derrota") + f" · {cola} · {res.minutos:.0f} min",
+        description=f"**Equipo:** {_linea_equipo(res.propio)}\n**Rival:** {_linea_equipo(res.rival)}",
         color=discord.Color.green() if res.gano else discord.Color.red(),
+        timestamp=datetime.fromtimestamp(res.fin / 1000, tz=timezone.utc) if res.fin else None,
     )
-    embed.set_footer(text=f"{res.match_id} · puntaje comparado con el propio equipo")
+    for j in res.equipo:
+        icono = ("🏆" if res.gano else "💀") if j is res.destacado else "▫️"
+        campeon = riot.nombre_campeon(j.campeon) + (f" ({j.rol})" if j.rol else "")
+        nombre = nombre_vinculado(j)
+        quien = f"{nombre} · {campeon}" if nombre else f"{campeon} · sin vincular"
+        embed.add_field(name=f"{icono} {quien} — {j.puntaje:.0f} pts", value=_ficha(j), inline=False)
+
+    d = res.destacado
+    titulo = "el carreador" if res.gano else "el más manco"
+    embed.add_field(name=f"🔎 Por qué {jugador_texto(d)} es {titulo}", value=_por_que(d), inline=False)
+    embed.set_footer(text=f"{res.match_id} · puntaje por rol: contra su equipo y su rival de línea")
     return embed
 
 
-async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.VoiceChannel | None,
+async def anunciar(res: Resultado, canal_voz: discord.VoiceChannel | None,
                    canal_texto: discord.abc.Messageable | None):
     j = res.destacado
     texto = (MENSAJE_MEJOR if res.gano else MENSAJE_PEOR).format(
@@ -203,7 +242,7 @@ async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.Voic
     destino = client.get_channel(CANAL_TEXTO_ID) if CANAL_TEXTO_ID else canal_texto
     if destino:
         try:
-            await destino.send(content=f"🔎 {texto}", embed=armar_embed(res, guild))
+            await destino.send(content=f"📢 {texto}", embed=armar_embed(res))
         except discord.HTTPException:
             log.exception("No se pudo mandar el resumen de texto")
     if canal_voz:
@@ -263,7 +302,7 @@ async def revisar_jugador(miembro: discord.Member, canal: discord.VoiceChannel):
     log.info("Partida nueva %s de %s (%s): %s %s (%.0f pts)", ultima, miembro.display_name,
              "victoria" if res.gano else "derrota", "mejor" if res.gano else "peor",
              jugador_texto(res.destacado), res.destacado.puntaje)
-    await anunciar(res, canal.guild, canal, canal)
+    await anunciar(res, canal, canal)
 
 
 sin_conexion = False  # para avisar una sola vez en el log mientras Riot no responde
@@ -379,9 +418,12 @@ async def cmd_analizar(interaction: discord.Interaction, usuario: discord.Member
     if res is None:
         await interaction.followup.send("No encontré una partida analizable (sin partidas, remake o modo no soportado).")
         return
-    await interaction.followup.send("Analizando...")
+    if CANAL_TEXTO_ID and CANAL_TEXTO_ID != interaction.channel_id:
+        await interaction.followup.send(f"📊 Listo, el resultado está en <#{CANAL_TEXTO_ID}>.")
+    else:
+        await interaction.followup.send("📊 Resultado:")
     voz = usuario.voice.channel if usuario.voice else None
-    await anunciar(res, interaction.guild, voz, interaction.channel)
+    await anunciar(res, voz, interaction.channel)
 
 
 # ---------------------------------------------------------------- arranque
