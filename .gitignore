@@ -1,0 +1,7 @@
+.env
+audios/
+bot.log*
+supervisor.log
+datos.json
+__pycache__/
+.venv/

@@ -1,0 +1,105 @@
+# Post-Game Analysis Bot
+
+A private, non-commercial Discord bot for a small group of friends who play League of Legends together on the **LAS** server.
+
+When a linked player who is in one of our Discord voice channels finishes a match, the bot fetches the post-game data from the Riot API, scores every member of that player's team and posts a short recap:
+
+- **Loss** → it names the lowest-scoring player of the team 💀
+- **Win** → it names the top performer of the team 🏆
+
+The recap is posted as a text message with a per-player breakdown and is also read aloud in the voice channel with text-to-speech. The bot's messages and commands are in Spanish.
+
+## Riot API usage
+
+| Endpoint | Purpose | When |
+|---|---|---|
+| `ACCOUNT-V1` `/riot/account/v1/accounts/by-riot-id/{gameName}/{tagLine}` | Resolve the PUUID of a player | Once, when the player opts in |
+| `MATCH-V5` `/lol/match/v5/matches/by-puuid/{puuid}/ids?count=1` | Detect a newly finished match | Every 90 s, only for linked players currently in a voice channel |
+| `MATCH-V5` `/lol/match/v5/matches/{matchId}` | Post-game stats | Once per finished match |
+| `MATCH-V5` `/lol/match/v5/matches/{matchId}/timeline` | Gold at minute 15 | Once per finished match |
+| Data Dragon `champion.json` | Champion display names | At startup |
+
+- Only **completed** matches are analyzed. The bot uses no live-game or Spectator data and provides no in-game advantage or real-time information.
+- Remakes and non-standard modes (Arena, Swarm) are ignored.
+- Expected volume is a few requests per minute at peak. `429` responses are handled by waiting for `Retry-After`.
+
+## Privacy and consent
+
+- Players opt in explicitly with `/vincular Name#TAG` (link) and can remove their data at any time with `/desvincular` (unlink).
+- **Only opted-in players are named**, using their summoner name. Every other participant of the match (teammates or opponents outside the group) is referred to only by the champion they played, for example "el jugador de Wukong" ("the Wukong player"). Their Riot IDs and PUUIDs are never shown, logged or stored.
+- The only stored data (`datos.json`, local) is the link between a Discord user ID and the player's Riot ID/PUUID, the ID of the last processed match, and a list of already announced match IDs (to avoid duplicates). Match data is not stored or shared.
+- The API key is kept in a local `.env` file that is never committed or shared.
+
+## How the score works
+
+Each player gets a score from 0 to 100, computed from two kinds of stats:
+
+- **General stats** (KDA, kill participation, damage to champions per minute, CS per minute, vision per minute) are compared **within the player's own team**: the best value in the team scores 1 and the others get the proportion.
+- **Role stats** are compared **against the opponent in the same position**: equal scores 0.5, double scores 1, half scores 0.
+  - Gold difference at 15 minutes (±3000 gold maps to 0–1)
+  - Damage to buildings
+  - Toughness (damage taken + damage self-mitigated)
+  - Objective participation (dragons, Baron, Rift Herald, Voidgrubs)
+  - Utility (healing and shielding on teammates, plus crowd control time)
+
+KDA is `(kills + assists) / max(1, deaths)`, so assists count as much as kills.
+
+### Weights by role
+
+| Role | KDA | KP | Damage | CS | Vision | Gold @15 | Buildings | Toughness | Objectives | Utility |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Top | 25% | 10% | 20% | 10% | | 15% | 10% | 10% | | |
+| Jungle | 25% | 25% | 10% | | 10% | 10% | | | 20% | |
+| Mid | 30% | 15% | 25% | 10% | 5% | 15% | | | | |
+| ADC | 30% | 10% | 30% | 15% | | 10% | 5% | | | |
+| Support | 25% | 25% | 10% | | 20% | | | | | 20% |
+| No roles (ARAM) | 35% | 20% | 20% | 15% | 10% | | | | | |
+
+If a stat cannot be computed (a match shorter than 15 minutes, no lane opponent, the timeline is unavailable), it is skipped and the remaining weights are rescaled.
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `/vincular riot_id [usuario]` | Link a Riot ID (`Name#TAG`) to yourself or to another member |
+| `/desvincular [usuario]` | Remove the link and its stored data |
+| `/vinculados` | List the linked players in the server |
+| `/analizar [usuario]` | Analyze someone's last match on demand |
+
+## Setup
+
+Requirements: Python 3.10 or newer (3.12 recommended), a Discord bot token and a Riot API key.
+
+1. **Discord bot:** create an application at <https://discord.com/developers/applications> and copy the bot token. Invite it with the `bot` and `applications.commands` scopes and the *View Channels*, *Send Messages*, *Embed Links*, *Connect* and *Speak* permissions.
+2. **Install:**
+   ```bash
+   python -m venv .venv
+   # Windows: .venv\Scripts\activate    Linux: source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+3. **Configure:** copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` and `RIOT_API_KEY`. The other settings (text channel, spoken messages, voice, polling interval) are documented in the file.
+4. **Run:**
+   ```bash
+   python bot.py
+   ```
+
+FFmpeg is bundled through `imageio-ffmpeg`, so there is nothing else to install.
+
+### Running it permanently
+
+- **Windows:** `windows/activar-inicio-automatico.bat` registers a scheduled task that starts the bot at logon through `supervisor.py`, which restarts it if it exits. `detener-bot.bat`, `iniciar-bot.bat`, `estado-bot.bat` and `quitar-inicio-automatico.bat` control it.
+- **Linux (Ubuntu/Debian):** `bash deploy/instalar.sh` installs the dependencies and a `systemd` service (`bot-analisis`).
+
+## Project structure
+
+| File | Contents |
+|---|---|
+| `bot.py` | Discord bot: commands, match polling, announcements (text and voice) |
+| `riot.py` | Minimal Riot API client (Account-V1, Match-V5) and Data Dragon |
+| `analisis.py` | Scoring and best/worst selection |
+| `supervisor.py` | Restarts the bot if it exits |
+| `windows/`, `deploy/` | Scripts to run it permanently on Windows or Linux |
+
+## Legal
+
+Post-Game Analysis Bot isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
