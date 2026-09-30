@@ -206,23 +206,29 @@ async def hablar(canal: discord.VoiceChannel, texto: str):
 
 # ---------------------------------------------------------------- anuncios
 
-def nombre_vinculado(j: Jugador) -> str | None:
+def nombre_vinculado(j: Jugador, hablado: bool = False) -> str | None:
     """Nombre de invocador de un jugador que se vinculó (dio su consentimiento); None si no.
 
     Se toma de la partida, así refleja cambios de nombre. A los no vinculados (desconocidos
-    de la partida) nunca se los nombra: solo se usa su campeón.
+    de la partida) nunca se los nombra: solo se usa su campeón. Para la voz (hablado=True)
+    se usa la pronunciación que haya cargado con /vincular, si tiene.
     """
-    return j.nombre if vinculo_de_puuid(j.puuid) else None
+    did = vinculo_de_puuid(j.puuid)
+    if not did:
+        return None
+    if hablado and datos["vinculos"][did].get("pronunciacion"):
+        return datos["vinculos"][did]["pronunciacion"]
+    return j.nombre
 
 
-def jugador_texto(j: Jugador, enfasis: bool = False) -> str:
+def jugador_texto(j: Jugador, enfasis: bool = False, hablado: bool = False) -> str:
     """Cómo se lo nombra en voz y texto: "Invocador con Campeón" o "el jugador de Campeón".
 
     Con énfasis, el nombre va entre signos de admiración ("¡Invocador! con Campeón"), que la
     voz lee con más fuerza.
     """
     campeon = riot.nombre_campeon(j.campeon)
-    nombre = nombre_vinculado(j)
+    nombre = nombre_vinculado(j, hablado)
     if enfasis:
         return f"¡{nombre}! con {campeon}" if nombre else f"¡el jugador de {campeon}!"
     return f"{nombre} con {campeon}" if nombre else f"el jugador de {campeon}"
@@ -337,18 +343,24 @@ async def pasar_rol_peor(guild: discord.Guild, j: Jugador) -> discord.Member | N
     return miembro
 
 
-async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.VoiceChannel | None,
-                   canal_texto: discord.abc.Messageable | None):
-    await riot.asegurar_campeones()
+def armar_mensaje(res: Resultado, hablado: bool) -> str:
+    """El mensaje del anuncio. hablado=True usa la pronunciación de los nombres (para la voz)."""
     j = res.destacado
-    texto = (MENSAJE_MEJOR if res.gano else MENSAJE_PEOR).format(
-        jugador=jugador_texto(j),
-        jugador_enfasis=jugador_texto(j, enfasis=True),
-        nombre=nombre_vinculado(j) or f"el jugador de {riot.nombre_campeon(j.campeon)}",
+    return (MENSAJE_MEJOR if res.gano else MENSAJE_PEOR).format(
+        jugador=jugador_texto(j, hablado=hablado),
+        jugador_enfasis=jugador_texto(j, enfasis=True, hablado=hablado),
+        nombre=nombre_vinculado(j, hablado) or f"el jugador de {riot.nombre_campeon(j.campeon)}",
         campeon=riot.nombre_campeon(j.campeon),
         kills=j.kills, muertes=j.deaths, asistencias=j.assists,
         kda=j.kda_texto, puntaje=round(j.puntaje),
     )
+
+
+async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.VoiceChannel | None,
+                   canal_texto: discord.abc.Messageable | None):
+    await riot.asegurar_campeones()
+    j = res.destacado
+    texto = armar_mensaje(res, hablado=False)
     contenido = f"📢 {texto}"
     if not res.gano:
         try:
@@ -367,7 +379,7 @@ async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.Voic
             log.exception("No se pudo mandar el resumen de texto")
     if canal_voz:
         try:
-            await hablar(canal_voz, texto)
+            await hablar(canal_voz, armar_mensaje(res, hablado=True))
         except Exception:
             log.exception("No se pudo anunciar por voz")
 
@@ -462,8 +474,13 @@ async def antes_de_revisar():
 # ---------------------------------------------------------------- comandos
 
 @tree.command(name="vincular", description="Vincula una cuenta de LoL (Nombre#TAG) a un usuario de Discord")
-@app_commands.describe(riot_id="Tu Riot ID, por ejemplo: Faker#KR1", usuario="A quién vincular (por defecto, a vos)")
-async def cmd_vincular(interaction: discord.Interaction, riot_id: str, usuario: discord.Member | None = None):
+@app_commands.describe(
+    riot_id="Tu Riot ID, por ejemplo: Faker#KR1",
+    usuario="A quién vincular (por defecto, a vos)",
+    pronunciacion="Opcional: cómo tiene que decir tu nombre la voz del bot (ej: xaquilesss → Aquiles)",
+)
+async def cmd_vincular(interaction: discord.Interaction, riot_id: str, usuario: discord.Member | None = None,
+                       pronunciacion: app_commands.Range[str, 1, 50] | None = None):
     usuario = usuario or interaction.user
     if "#" not in riot_id:
         await interaction.response.send_message("Poné el Riot ID completo con el tag, por ejemplo `Faker#KR1`.", ephemeral=True)
@@ -482,13 +499,21 @@ async def cmd_vincular(interaction: discord.Interaction, riot_id: str, usuario: 
     except SinConexion:
         await interaction.followup.send("⚠️ No me puedo conectar con Riot (¿está activo el filtro web?).")
         return
-    datos["vinculos"][str(usuario.id)] = {
+    anterior = datos["vinculos"].get(str(usuario.id), {})
+    if pronunciacion is None and anterior.get("puuid") == cuenta["puuid"]:
+        pronunciacion = anterior.get("pronunciacion")  # re-vincular la misma cuenta no la borra
+    vinculo = {
         "riot_id": f"{cuenta['gameName']}#{cuenta['tagLine']}",
         "puuid": cuenta["puuid"],
         "ultima": ultima,  # las partidas anteriores a vincular no se anuncian
     }
+    if pronunciacion:
+        vinculo["pronunciacion"] = pronunciacion.strip()
+    datos["vinculos"][str(usuario.id)] = vinculo
     guardar_datos()
-    await interaction.followup.send(f"✅ {usuario.mention} quedó vinculado a **{cuenta['gameName']}#{cuenta['tagLine']}**.")
+    extra = f" La voz lo va a decir como **{vinculo['pronunciacion']}**." if pronunciacion else ""
+    await interaction.followup.send(
+        f"✅ {usuario.mention} quedó vinculado a **{cuenta['gameName']}#{cuenta['tagLine']}**.{extra}")
 
 
 @tree.command(name="desvincular", description="Quita la cuenta de LoL vinculada")
@@ -506,6 +531,7 @@ async def cmd_desvincular(interaction: discord.Interaction, usuario: discord.Mem
 async def cmd_vinculados(interaction: discord.Interaction):
     lineas = [
         f"• {m.mention} → **{v['riot_id']}**"
+        + (f" (se pronuncia: *{v['pronunciacion']}*)" if v.get("pronunciacion") else "")
         for did, v in datos["vinculos"].items()
         if (m := interaction.guild.get_member(int(did)))
     ]
