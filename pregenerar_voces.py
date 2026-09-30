@@ -50,11 +50,48 @@ async def campeones_por_vinculo(vinculos: list[dict], mejores: int, todos: bool)
         await bot.riot.cerrar()
 
 
+INFORME = bot.BASE_DIR / "verificacion_voces.txt"
+UMBRAL_DUDOSO = 0.85  # parecido entre lo esperado y lo que entendió Whisper
+
+
+def verificar(xtts_python: Path, tareas: list[dict], limite: int):
+    """Transcribe los audios con Whisper y deja un informe con los que no coinciden con su texto."""
+    if limite:
+        tareas = tareas[:limite]
+    print(f"Verificando {len(tareas)} audios con Whisper...", flush=True)
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+        json.dump(tareas, f, ensure_ascii=False)
+    resultados = []
+    try:
+        proceso = subprocess.Popen([str(xtts_python), "-W", "ignore", str(bot.BASE_DIR / "verificar_xtts.py"), f.name],
+                                   stdout=subprocess.PIPE, text=True, encoding="utf-8")
+        for linea in proceso.stdout:
+            r = json.loads(linea)
+            resultados.append(r)
+            marca = "  " if r["parecido"] >= UMBRAL_DUDOSO else "⚠️"
+            print(f"{len(resultados)}/{len(tareas)} {marca} {r['parecido']:.2f} · {r['oido']}", flush=True)
+        proceso.wait()
+    finally:
+        Path(f.name).unlink(missing_ok=True)
+
+    resultados.sort(key=lambda r: r["parecido"])
+    dudosos = [r for r in resultados if r["parecido"] < UMBRAL_DUDOSO]
+    with INFORME.open("w", encoding="utf-8") as inf:
+        inf.write(f"{len(resultados)} audios verificados · {len(dudosos)} dudosos (parecido < {UMBRAL_DUDOSO})\n")
+        inf.write("Ordenados del menos parecido al más parecido.\n\n")
+        for r in resultados:
+            inf.write(f"{r['parecido']:.2f} · {r['duracion']}s · {Path(r['salida']).name}\n"
+                      f"   esperado: {r['texto']}\n   entendido: {r['oido']}\n\n")
+    print(f"\n{len(dudosos)} dudosos de {len(resultados)}. Informe completo: {INFORME}")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--mejores", type=int, default=20, help="campeones con más maestría por vinculado")
     p.add_argument("--todos", action="store_true", help="todos los campeones para cada vinculado")
     p.add_argument("--limite", type=int, default=0, help="generar solo los primeros N (para probar)")
+    p.add_argument("--verificar", action="store_true",
+                   help="en vez de generar, transcribir con Whisper los ya generados y marcar los dudosos")
     args = p.parse_args()
 
     xtts_python = bot.BASE_DIR / bot.XTTS_PYTHON
@@ -70,15 +107,22 @@ def main():
     if not bot.riot.campeones:
         sys.exit("No se pudieron bajar los campeones de Data Dragon (¿sin internet o con el filtro web activo?)")
 
-    textos = set(bot.REMATES_PEOR + bot.REMATES_MEJOR)
+    # texto -> pista para Whisper al verificar (los nombres propios que se dicen)
+    textos = {r: "" for r in bot.REMATES_PEOR + bot.REMATES_MEJOR}
     for vinculo in vinculos:
+        nombre = vinculo.get("pronunciacion") or vinculo["riot_id"].split("#")[0]
         for campeon in elegidos.get(vinculo["puuid"], []):
             for gano in (False, True):
-                textos.add(presentacion(vinculo, campeon, gano))
+                textos[presentacion(vinculo, campeon, gano)] = f"{nombre}, {bot.riot.nombre_campeon(campeon)}."
     # Sin vincular: uno por posición ("el random de top"), más el de ARAM (sin posición)
     for posicion in list(bot.POSICIONES_RANDOM) + [""]:
         for gano in (False, True):
-            textos.add(presentacion(None, "-", gano, posicion))
+            textos[presentacion(None, "-", gano, posicion)] = "random, top, jungla, mid, ADC, support."
+
+    if args.verificar:
+        verificar(xtts_python, [{"texto": t, "salida": str(bot.ruta_xtts(t)), "pista": textos[t]}
+                                for t in sorted(textos) if bot.ruta_xtts(t).exists()], args.limite)
+        return
 
     pendientes = [{"texto": t, "salida": str(bot.ruta_xtts(t))} for t in sorted(textos)
                   if not bot.ruta_xtts(t).exists()]

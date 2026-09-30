@@ -5,3 +5,4 @@ supervisor.log
 datos.json
 __pycache__/
 .venv/
+verificacion_voces.txt
