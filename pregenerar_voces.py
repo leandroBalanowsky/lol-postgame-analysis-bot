@@ -1,9 +1,9 @@
 ﻿"""Genera de antemano los audios XTTS de los anuncios más probables.
 
 Por defecto: para cada jugador vinculado, sus N campeones con más maestría (20), en
-derrota y en victoria; más todos los remates. Los jugadores sin vincular y los demás
-campeones se generan en el momento del anuncio. Con --todos genera todos los campeones
-para cada vinculado y también "el jugador de X".
+derrota y en victoria; los genéricos de los sin vincular ("el random de top", uno por
+posición); y todos los remates. Los demás campeones de los vinculados se generan en el
+momento del anuncio. Con --todos genera todos los campeones para cada vinculado.
 
 Saltea los que ya están guardados, así se puede cortar y retomar, o volver a correr
 después de vincular a alguien nuevo. Conviene correrlo cuando no se está jugando: usa
@@ -23,10 +23,10 @@ import bot
 from analisis import Jugador, Resultado, TotalesEquipo
 
 
-def presentacion(vinculo: dict | None, campeon: str, gano: bool) -> str:
+def presentacion(vinculo: dict | None, campeon: str, gano: bool, posicion: str = "") -> str:
     """La presentación hablada, igual a la que armaría el bot en un anuncio real."""
     j = Jugador(puuid=vinculo["puuid"] if vinculo else "-", nombre=vinculo["riot_id"].split("#")[0] if vinculo else "-",
-                campeon=campeon, posicion="", kills=0, deaths=0, assists=0,
+                campeon=campeon, posicion=posicion, kills=0, deaths=0, assists=0,
                 farm_min=0, dano_min=0, vision_min=0, kp=0)
     vacio = TotalesEquipo(0, 0, 0, 0, 0, 0)
     return bot.armar_mensaje(Resultado("-", "", 0, 0, 0, gano, [j], vacio, vacio), hablado=True)
@@ -53,7 +53,7 @@ async def campeones_por_vinculo(vinculos: list[dict], mejores: int, todos: bool)
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--mejores", type=int, default=20, help="campeones con más maestría por vinculado")
-    p.add_argument("--todos", action="store_true", help="todos los campeones, también para los sin vincular")
+    p.add_argument("--todos", action="store_true", help="todos los campeones para cada vinculado")
     p.add_argument("--limite", type=int, default=0, help="generar solo los primeros N (para probar)")
     args = p.parse_args()
 
@@ -75,10 +75,10 @@ def main():
         for campeon in elegidos.get(vinculo["puuid"], []):
             for gano in (False, True):
                 textos.add(presentacion(vinculo, campeon, gano))
-    if args.todos:
-        for campeon in bot.riot.campeones:
-            for gano in (False, True):
-                textos.add(presentacion(None, campeon, gano))
+    # Sin vincular: uno por posición ("el random de top"), más el de ARAM (sin posición)
+    for posicion in list(bot.POSICIONES_RANDOM) + [""]:
+        for gano in (False, True):
+            textos.add(presentacion(None, "-", gano, posicion))
 
     pendientes = [{"texto": t, "salida": str(bot.ruta_xtts(t))} for t in sorted(textos)
                   if not bot.ruta_xtts(t).exists()]

@@ -29,7 +29,7 @@ After a loss, if the lowest-scoring player is an opted-in member, they get a Dis
 ## Privacy and consent
 
 - Players opt in explicitly with `/vincular Name#TAG` (link) and can remove their data at any time with `/desvincular` (unlink).
-- **Only opted-in players are named**, using their summoner name. Every other participant of the match (teammates or opponents outside the group) is referred to only by the champion they played, for example "el jugador de Wukong" ("the Wukong player"). Their Riot IDs and PUUIDs are never shown, logged or stored.
+- **Only opted-in players are named**, using their summoner name. Every other participant of the match (teammates or opponents outside the group) is referred to only by their position, for example "el random de top" ("the random top laner"). Their Riot IDs and PUUIDs are never shown, logged or stored.
 - The only stored data (`datos.json`, local) is the link between a Discord user ID and the player's Riot ID/PUUID (plus an optional pronunciation hint for the spoken announcement), the ID of the last processed match, a list of already announced match IDs (to avoid duplicates) and, per Discord server, which linked member currently holds the "worst player" role. Match data is not stored or shared.
 - The API key is kept in a local `.env` file that is never committed or shared.
 

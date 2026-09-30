@@ -30,7 +30,7 @@ RIOT_API_KEY = os.getenv("RIOT_API_KEY")
 # Canal de texto para el resumen; vacío = el chat del canal de voz donde están
 CANAL_TEXTO_ID = int(os.getenv("CANAL_TEXTO_ID") or 0)
 # Derrota: se anuncia al peor del equipo. Victoria: al mejor.
-# {jugador} es "Invocador con Campeón" si está vinculado, o "el jugador de Campeón" si no.
+# {jugador} es "Invocador con Campeón" si está vinculado, o "el random de <posición>" si no.
 # {jugador_enfasis} es lo mismo con el nombre entre "¡!" ("¡Invocador! con Campeón"), para la voz.
 MENSAJE_PEOR = os.getenv(
     "MENSAJE_PEOR",
@@ -237,17 +237,29 @@ def nombre_vinculado(j: Jugador, hablado: bool = False) -> str | None:
     return j.nombre
 
 
+# Cómo se nombra a un jugador sin vincular según su posición. En minúscula (salvo ADC) para
+# que la voz no lo deletree.
+POSICIONES_RANDOM = {"TOP": "top", "JUNGLE": "jungla", "MIDDLE": "mid", "BOTTOM": "ADC", "UTILITY": "support"}
+
+
+def random_generico(j: Jugador) -> str:
+    """Nombre genérico de un jugador sin vincular: "el random de top" (o "del equipo" en ARAM)."""
+    posicion = POSICIONES_RANDOM.get(j.posicion)
+    return f"el random de {posicion}" if posicion else "el random del equipo"
+
+
 def jugador_texto(j: Jugador, enfasis: bool = False, hablado: bool = False) -> str:
-    """Cómo se lo nombra en voz y texto: "Invocador con Campeón" o "el jugador de Campeón".
+    """Cómo se lo nombra en voz y texto: "Invocador con Campeón" o "el random de <posición>".
 
     Con énfasis, el nombre va entre signos de admiración ("¡Invocador! con Campeón"), que la
-    voz lee con más fuerza.
+    voz lee con más fuerza. Al jugador sin vincular no se lo nombra ni se dice su campeón, así
+    su audio es uno solo por posición y sirve para cualquier partida.
     """
     campeon = riot.nombre_campeon(j.campeon)
     nombre = nombre_vinculado(j, hablado)
     if enfasis:
-        return f"¡{nombre}! con {campeon}" if nombre else f"¡el jugador de {campeon}!"
-    return f"{nombre} con {campeon}" if nombre else f"el jugador de {campeon}"
+        return f"¡{nombre}! con {campeon}" if nombre else f"¡{random_generico(j)}!"
+    return f"{nombre} con {campeon}" if nombre else random_generico(j)
 
 
 COLAS = {
@@ -365,12 +377,12 @@ def armar_mensaje(res: Resultado, hablado: bool) -> str:
     texto = (MENSAJE_MEJOR if res.gano else MENSAJE_PEOR).format(
         jugador=jugador_texto(j, hablado=hablado),
         jugador_enfasis=jugador_texto(j, enfasis=True, hablado=hablado),
-        nombre=nombre_vinculado(j, hablado) or f"el jugador de {riot.nombre_campeon(j.campeon)}",
+        nombre=nombre_vinculado(j, hablado) or random_generico(j),
         campeon=riot.nombre_campeon(j.campeon),
         kills=j.kills, muertes=j.deaths, asistencias=j.assists,
         kda=j.kda_texto, puntaje=round(j.puntaje),
     )
-    # "¡el jugador de Wukong!." -> "¡el jugador de Wukong!" (cuando {jugador_enfasis} va antes de un punto)
+    # "¡el random de top!." -> "¡el random de top!" (cuando {jugador_enfasis} va antes de un punto)
     return texto.replace("!.", "!")
 
 
