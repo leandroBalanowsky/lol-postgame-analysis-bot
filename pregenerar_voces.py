@@ -1,11 +1,15 @@
-﻿"""Genera de antemano los audios XTTS de todos los anuncios posibles.
+﻿"""Genera de antemano los audios XTTS de los anuncios más probables.
 
-Por cada campeón: la presentación de cada jugador vinculado y la de "el jugador de X"
-(sin vincular), en derrota y en victoria; más todos los remates. Saltea los que ya
-están guardados, así se puede cortar y retomar, o volver a correr después de vincular
-a alguien nuevo. Conviene correrlo cuando no se está jugando: usa la placa de video.
+Por defecto: para cada jugador vinculado, sus N campeones con más maestría (20), en
+derrota y en victoria; más todos los remates. Los jugadores sin vincular y los demás
+campeones se generan en el momento del anuncio. Con --todos genera todos los campeones
+para cada vinculado y también "el jugador de X".
 
-Uso: python pregenerar_voces.py [--limite N]   (N = generar solo los primeros N, para probar)
+Saltea los que ya están guardados, así se puede cortar y retomar, o volver a correr
+después de vincular a alguien nuevo. Conviene correrlo cuando no se está jugando: usa
+la placa de video.
+
+Uso: python pregenerar_voces.py [--mejores 20] [--todos] [--limite N]
 """
 import argparse
 import asyncio
@@ -28,14 +32,29 @@ def presentacion(vinculo: dict | None, campeon: str, gano: bool) -> str:
     return bot.armar_mensaje(Resultado("-", "", 0, 0, 0, gano, [j], vacio, vacio), hablado=True)
 
 
-async def cargar_campeones():
+async def campeones_por_vinculo(vinculos: list[dict], mejores: int, todos: bool) -> dict[str, list[str]]:
+    """Qué campeones generar para cada vinculado (clave: puuid)."""
     await bot.riot.abrir()
-    await bot.riot.cerrar()
+    try:
+        if not bot.riot.campeones:
+            return {}
+        if todos:
+            return {v["puuid"]: list(bot.riot.campeones) for v in vinculos}
+        resultado = {}
+        for v in vinculos:
+            resultado[v["puuid"]] = await bot.riot.mejores_campeones(v["puuid"], mejores)
+            nombres = ", ".join(bot.riot.nombre_campeon(c) for c in resultado[v["puuid"]])
+            print(f"{v['riot_id']}: {nombres}", flush=True)
+        return resultado
+    finally:
+        await bot.riot.cerrar()
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--limite", type=int, default=0)
+    p.add_argument("--mejores", type=int, default=20, help="campeones con más maestría por vinculado")
+    p.add_argument("--todos", action="store_true", help="todos los campeones, también para los sin vincular")
+    p.add_argument("--limite", type=int, default=0, help="generar solo los primeros N (para probar)")
     args = p.parse_args()
 
     xtts_python = bot.BASE_DIR / bot.XTTS_PYTHON
@@ -43,20 +62,27 @@ def main():
     if bot.VOZ_MOTOR != "xtts" or not xtts_python.is_file() or not referencia.is_file():
         sys.exit("Esto es solo para VOZ_MOTOR=xtts con XTTS_PYTHON y XTTS_REFERENCIA configurados en .env")
 
-    asyncio.run(cargar_campeones())
+    vinculos = list(bot.datos["vinculos"].values())
+    try:
+        elegidos = asyncio.run(campeones_por_vinculo(vinculos, args.mejores, args.todos))
+    except bot.RiotError as e:
+        sys.exit(f"No se pudo consultar a Riot: {e}")
     if not bot.riot.campeones:
         sys.exit("No se pudieron bajar los campeones de Data Dragon (¿sin internet o con el filtro web activo?)")
 
-    vinculos = list(bot.datos["vinculos"].values())
     textos = set(bot.REMATES_PEOR + bot.REMATES_MEJOR)
-    for campeon in bot.riot.campeones:
-        for vinculo in vinculos + [None]:
+    for vinculo in vinculos:
+        for campeon in elegidos.get(vinculo["puuid"], []):
             for gano in (False, True):
                 textos.add(presentacion(vinculo, campeon, gano))
+    if args.todos:
+        for campeon in bot.riot.campeones:
+            for gano in (False, True):
+                textos.add(presentacion(None, campeon, gano))
 
     pendientes = [{"texto": t, "salida": str(bot.ruta_xtts(t))} for t in sorted(textos)
                   if not bot.ruta_xtts(t).exists()]
-    print(f"{len(bot.riot.campeones)} campeones · {len(vinculos)} vinculados · {len(textos)} audios en total"
+    print(f"{len(vinculos)} vinculados · {len(textos)} audios en total"
           f" · {len(textos) - len(pendientes)} ya guardados · {len(pendientes)} por generar", flush=True)
     if args.limite:
         pendientes = pendientes[:args.limite]

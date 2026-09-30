@@ -1,4 +1,4 @@
-"""Cliente mínimo de la API de Riot (Account-V1 y Match-V5) y Data Dragon."""
+"""Cliente mínimo de la API de Riot (Account-V1, Match-V5, Champion-Mastery-V4) y Data Dragon."""
 import asyncio
 import logging
 from urllib.parse import quote
@@ -9,6 +9,7 @@ log = logging.getLogger("riot")
 
 # LAS: la plataforma es la2 y el ruteo regional (cuentas y partidas) es americas.
 REGION = "https://americas.api.riotgames.com"
+PLATAFORMA = "https://la2.api.riotgames.com"
 DDRAGON = "https://ddragon.leagueoflegends.com"
 
 
@@ -29,6 +30,7 @@ class Riot:
         self.clave = clave
         self.sesion: aiohttp.ClientSession | None = None
         self.campeones: dict[str, str] = {}  # id interno (MonkeyKing) -> nombre (Wukong)
+        self.ids_por_numero: dict[int, str] = {}  # número de campeón (62) -> id interno (MonkeyKing)
 
     async def abrir(self):
         self.sesion = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
@@ -83,12 +85,19 @@ class Riot:
         """Evolución minuto a minuto de la partida (se usa para el oro al minuto 15)."""
         return await self._get(f"{REGION}/lol/match/v5/matches/{match_id}/timeline")
 
+    async def mejores_campeones(self, puuid: str, cantidad: int = 20) -> list[str]:
+        """Los campeones con más maestría del jugador (ids internos), de mayor a menor."""
+        datos = await self._get(f"{PLATAFORMA}/lol/champion-mastery/v4/champion-masteries/by-puuid/{puuid}"
+                                f"/top?count={cantidad}") or []
+        return [self.ids_por_numero[d["championId"]] for d in datos if d["championId"] in self.ids_por_numero]
+
     async def _cargar_campeones(self):
         async with self.sesion.get(f"{DDRAGON}/api/versions.json") as r:
             version = (await r.json())[0]
         async with self.sesion.get(f"{DDRAGON}/cdn/{version}/data/es_AR/champion.json") as r:
             datos = (await r.json())["data"]
         self.campeones = {c["id"]: c["name"] for c in datos.values()}
+        self.ids_por_numero = {int(c["key"]): c["id"] for c in datos.values()}
         log.info("Cargados %d campeones (versión %s)", len(self.campeones), version)
 
     async def asegurar_campeones(self):

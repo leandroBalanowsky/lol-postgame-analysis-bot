@@ -19,6 +19,7 @@ After a loss, if the lowest-scoring player is an opted-in member, they get a Dis
 | `MATCH-V5` `/lol/match/v5/matches/by-puuid/{puuid}/ids?count=1` | Detect a newly finished match | Every 90 s, only for linked players currently in a voice channel |
 | `MATCH-V5` `/lol/match/v5/matches/{matchId}` | Post-game stats | Once per finished match |
 | `MATCH-V5` `/lol/match/v5/matches/{matchId}/timeline` | Gold at minute 15 | Once per finished match |
+| `CHAMPION-MASTERY-V4` `/lol/champion-mastery/v4/champion-masteries/by-puuid/{puuid}/top?count=20` | Each linked player's most played champions, to pre-generate their voice clips | Only when `pregenerar_voces.py` is run manually |
 | Data Dragon `champion.json` | Champion display names | At startup |
 
 - Only **completed** matches are analyzed. The bot uses no live-game or Spectator data and provides no in-game advantage or real-time information.
@@ -95,7 +96,7 @@ By default the spoken announcement uses `edge-tts`. With `VOZ_MOTOR=xtts` the bo
 - For each new sentence the bot runs `voz_xtts.py` as a separate process that loads the model, generates the audio and exits, so the GPU is only used for about 30 seconds after a match. The analysis of the reference voice is computed once and cached next to it. Generated audio is cached like any other announcement.
 - If XTTS fails or takes longer than `XTTS_TIMEOUT_SEGUNDOS`, that announcement falls back to `edge-tts`.
 - The spoken announcement is split into an intro (player and champion) and a closing line picked at random from `REMATES_PEOR` / `REMATES_MEJOR`, played back to back. Each piece is cached on its own, so a closing line is generated once and reused for everyone.
-- `pregenerar_voces.py` (or `windows/pregenerar-voces.bat`) generates every intro in advance: each linked player and "the X player" for every champion, after a loss and after a win, plus all closing lines (about 2,000 clips, roughly 2 hours on a GTX 1660 and ~550 MB). It loads the model once, skips what is already cached and can be stopped and resumed; run it again after linking someone new.
+- `pregenerar_voces.py` (or `windows/pregenerar-voces.bat`) generates intros in advance: by default each linked player's 20 highest-mastery champions, after a loss and after a win, plus all closing lines (about 200 clips, ~15 minutes on a GTX 1660). `--todos` covers every champion and "the X player" too (about 2,000 clips, ~2 hours, ~550 MB). It loads the model once, skips what is already cached and can be stopped and resumed; run it again after linking someone new.
 - The XTTS-v2 model is licensed under the Coqui Public Model License (non-commercial use only).
 
 ### Running it permanently
