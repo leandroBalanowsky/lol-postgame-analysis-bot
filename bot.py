@@ -346,7 +346,7 @@ async def pasar_rol_peor(guild: discord.Guild, j: Jugador) -> discord.Member | N
 def armar_mensaje(res: Resultado, hablado: bool) -> str:
     """El mensaje del anuncio. hablado=True usa la pronunciación de los nombres (para la voz)."""
     j = res.destacado
-    return (MENSAJE_MEJOR if res.gano else MENSAJE_PEOR).format(
+    texto = (MENSAJE_MEJOR if res.gano else MENSAJE_PEOR).format(
         jugador=jugador_texto(j, hablado=hablado),
         jugador_enfasis=jugador_texto(j, enfasis=True, hablado=hablado),
         nombre=nombre_vinculado(j, hablado) or f"el jugador de {riot.nombre_campeon(j.campeon)}",
@@ -354,6 +354,8 @@ def armar_mensaje(res: Resultado, hablado: bool) -> str:
         kills=j.kills, muertes=j.deaths, asistencias=j.assists,
         kda=j.kda_texto, puntaje=round(j.puntaje),
     )
+    # "¡el jugador de Wukong!." -> "¡el jugador de Wukong!" (cuando {jugador_enfasis} va antes de un punto)
+    return texto.replace("!.", "!")
 
 
 async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.VoiceChannel | None,
