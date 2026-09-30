@@ -5,13 +5,16 @@ coqui-tts (XTTS_PYTHON en .env). Así el modelo solo ocupa la placa de video mie
 y el bot no necesita PyTorch.
 
 Uso: python voz_xtts.py --texto "..." --salida audio.wav --referencia voz.mp3 [--temperatura 0.75]
+     python voz_xtts.py --lote tareas.json --referencia voz.mp3   (muchas frases cargando el modelo una vez)
 
 La voz de referencia se analiza una sola vez: el resultado se guarda al lado del archivo
 (<referencia>.latentes.pt) y se reutiliza mientras la referencia no cambie.
 """
 import argparse
+import json
 import os
 import sys
+import time
 from pathlib import Path
 
 os.environ["COQUI_TOS_AGREED"] = "1"  # licencia del modelo: Coqui Public Model License (uso no comercial)
@@ -39,29 +42,55 @@ def latentes(modelo, referencia: Path):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--texto", required=True)
-    p.add_argument("--salida", required=True, type=Path)
+    p.add_argument("--texto")
+    p.add_argument("--salida", type=Path)
+    p.add_argument("--lote", type=Path, help='JSON con [{"texto": ..., "salida": ...}, ...]')
     p.add_argument("--referencia", required=True, type=Path)
     p.add_argument("--temperatura", type=float, default=0.75)
     p.add_argument("--idioma", default="es")
     args = p.parse_args()
+    if args.lote:
+        tareas = json.loads(args.lote.read_text(encoding="utf-8"))
+    elif args.texto and args.salida:
+        tareas = [{"texto": args.texto, "salida": str(args.salida)}]
+    else:
+        p.error("hace falta --texto y --salida, o --lote")
 
     dispositivo = "cuda" if torch.cuda.is_available() else "cpu"
     modelo = TTS("tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False).to(dispositivo)
     modelo = modelo.synthesizer.tts_model
     gpt, speaker = latentes(modelo, args.referencia)
 
-    wav = np.asarray(modelo.inference(args.texto, args.idioma, gpt, speaker, temperature=args.temperatura)["wav"],
+    inicio = time.monotonic()
+    fallidas = 0
+    for i, tarea in enumerate(tareas, 1):
+        try:
+            generar(modelo, gpt, speaker, tarea["texto"], Path(tarea["salida"]), args)
+        except Exception as e:
+            if len(tareas) == 1:
+                raise
+            fallidas += 1
+            print(f"  error en «{tarea['texto']}»: {type(e).__name__}: {e}", file=sys.stderr)
+        if args.lote:
+            resto = (time.monotonic() - inicio) / i * (len(tareas) - i)
+            print(f"{i}/{len(tareas)} · faltan ~{resto / 60:.0f} min · {tarea['texto']}", flush=True)
+    if fallidas:
+        print(f"{fallidas} audios fallaron", file=sys.stderr)
+
+
+def generar(modelo, gpt, speaker, texto: str, salida: Path, args):
+    wav = np.asarray(modelo.inference(texto, args.idioma, gpt, speaker, temperature=args.temperatura)["wav"],
                      dtype=np.float32)
     n = min(int(SR * FUNDIDO), len(wav) // 2)
     rampa = np.linspace(0, 1, n, dtype=np.float32)
     wav[:n] *= rampa
     wav[-n:] *= rampa[::-1]
+    # El silencio final también hace de pausa cuando se reproduce otra parte a continuación
     wav = np.concatenate([wav, np.zeros(int(SR * SILENCIO_FINAL), dtype=np.float32)])
 
-    temporal = args.salida.with_suffix(".tmp.wav")
+    temporal = salida.with_suffix(".tmp.wav")
     sf.write(temporal, wav, SR)
-    temporal.replace(args.salida)  # nunca queda un audio a medio escribir
+    temporal.replace(salida)  # nunca queda un audio a medio escribir
 
 
 if __name__ == "__main__":

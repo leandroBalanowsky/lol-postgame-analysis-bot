@@ -94,6 +94,8 @@ By default the spoken announcement uses `edge-tts`. With `VOZ_MOTOR=xtts` the bo
 - XTTS lives in its own Python environment (`pip install coqui-tts` plus a CUDA build of PyTorch 2.8), so the bot itself stays lightweight. `XTTS_PYTHON` points to that environment's `python.exe` and `XTTS_REFERENCIA` to a 6–15 s clean recording of a single speaker (not included in this repository).
 - For each new sentence the bot runs `voz_xtts.py` as a separate process that loads the model, generates the audio and exits, so the GPU is only used for about 30 seconds after a match. The analysis of the reference voice is computed once and cached next to it. Generated audio is cached like any other announcement.
 - If XTTS fails or takes longer than `XTTS_TIMEOUT_SEGUNDOS`, that announcement falls back to `edge-tts`.
+- The spoken announcement is split into an intro (player and champion) and a closing line picked at random from `REMATES_PEOR` / `REMATES_MEJOR`, played back to back. Each piece is cached on its own, so a closing line is generated once and reused for everyone.
+- `pregenerar_voces.py` (or `windows/pregenerar-voces.bat`) generates every intro in advance: each linked player and "the X player" for every champion, after a loss and after a win, plus all closing lines (about 2,000 clips, roughly 2 hours on a GTX 1660 and ~550 MB). It loads the model once, skips what is already cached and can be stopped and resumed; run it again after linking someone new.
 - The XTTS-v2 model is licensed under the Coqui Public Model License (non-commercial use only).
 
 ### Running it permanently
@@ -108,7 +110,8 @@ By default the spoken announcement uses `edge-tts`. With `VOZ_MOTOR=xtts` the bo
 | `bot.py` | Discord bot: commands, match polling, announcements (text and voice) |
 | `riot.py` | Minimal Riot API client (Account-V1, Match-V5) and Data Dragon |
 | `analisis.py` | Scoring and best/worst selection |
-| `voz_xtts.py` | Optional XTTS-v2 voice generator, run as a separate process |
+| `voz_xtts.py` | Optional XTTS-v2 voice generator, run as a separate process (one sentence or a batch) |
+| `pregenerar_voces.py` | Generates every spoken announcement in advance with XTTS |
 | `supervisor.py` | Restarts the bot if it exits |
 | `windows/`, `deploy/` | Scripts to run it permanently on Windows or Linux |
 

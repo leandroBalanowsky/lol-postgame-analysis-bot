@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import subprocess
 import sys
 import time
@@ -39,6 +40,10 @@ MENSAJE_MEJOR = os.getenv(
     "MENSAJE_MEJOR",
     "El mejor del equipo fue {jugador}: {kills} kills, {muertes} muertes y {asistencias} asistencias",
 )
+# Remates: frases que se agregan al final, elegidas al azar. Varias separadas por "|".
+# Se generan como un audio aparte, así cada remate se genera una sola vez y sirve para todos.
+REMATES_PEOR = [r.strip() for r in os.getenv("REMATES_PEOR", "").split("|") if r.strip()]
+REMATES_MEJOR = [r.strip() for r in os.getenv("REMATES_MEJOR", "").split("|") if r.strip()]
 VOZ = os.getenv("VOZ", "es-AR-TomasNeural")
 VELOCIDAD = os.getenv("VELOCIDAD", "+0%")
 TONO = os.getenv("TONO", "+0Hz")
@@ -120,11 +125,17 @@ async def generar_audio_edge(texto: str) -> Path:
 xtts_lock = asyncio.Lock()  # una sola generación a la vez: la placa de video no da para dos
 
 
+def ruta_xtts(texto: str) -> Path:
+    """Dónde se guarda el audio XTTS de un texto (cambia si cambia la voz o la temperatura)."""
+    referencia = (BASE_DIR / XTTS_REFERENCIA).resolve()
+    clave = f"xtts|{referencia.name}|{referencia.stat().st_mtime}|{XTTS_TEMPERATURA}|{texto}"
+    return CACHE_DIR / (hashlib.md5(clave.encode()).hexdigest() + ".wav")
+
+
 async def generar_audio_xtts(texto: str) -> Path:
     """Genera con XTTS en un proceso aparte, que carga el modelo, genera y se cierra."""
     referencia = (BASE_DIR / XTTS_REFERENCIA).resolve()
-    clave = f"xtts|{referencia.name}|{referencia.stat().st_mtime}|{XTTS_TEMPERATURA}|{texto}"
-    ruta = CACHE_DIR / (hashlib.md5(clave.encode()).hexdigest() + ".wav")
+    ruta = ruta_xtts(texto)
     if ruta.exists():
         return ruta
     async with xtts_lock:
@@ -187,19 +198,24 @@ async def conectar(canal: discord.VoiceChannel) -> discord.VoiceClient:
     return vc
 
 
-async def hablar(canal: discord.VoiceChannel, texto: str):
-    """Entra al canal, dice el texto y se va."""
+async def hablar(canal: discord.VoiceChannel, partes: list[str]):
+    """Entra al canal, dice las partes una tras otra y se va.
+
+    Cada parte es un audio aparte (así se reutilizan: el remate sirve para cualquier jugador).
+    Los audios XTTS terminan con medio segundo de silencio, que hace de pausa entre partes.
+    """
     lock = locks.setdefault(canal.guild.id, asyncio.Lock())
     async with lock:
         if not any(not m.bot for m in canal.members):
             return
-        ruta = await generar_audio(texto)
+        rutas = [await generar_audio(p) for p in partes]  # todo listo antes de entrar a hablar
         if not any(not m.bot for m in canal.members):  # se fueron mientras se generaba el audio
             return
         vc = await conectar(canal)
         try:
-            log.info("Diciendo en #%s: %s", canal.name, texto)
-            await reproducir(vc, ruta)
+            log.info("Diciendo en #%s: %s", canal.name, " ".join(partes))
+            for ruta in rutas:
+                await reproducir(vc, ruta)
         finally:
             await vc.disconnect()
 
@@ -344,7 +360,7 @@ async def pasar_rol_peor(guild: discord.Guild, j: Jugador) -> discord.Member | N
 
 
 def armar_mensaje(res: Resultado, hablado: bool) -> str:
-    """El mensaje del anuncio. hablado=True usa la pronunciación de los nombres (para la voz)."""
+    """El mensaje del anuncio, sin el remate. hablado=True usa la pronunciación de los nombres."""
     j = res.destacado
     texto = (MENSAJE_MEJOR if res.gano else MENSAJE_PEOR).format(
         jugador=jugador_texto(j, hablado=hablado),
@@ -362,7 +378,10 @@ async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.Voic
                    canal_texto: discord.abc.Messageable | None):
     await riot.asegurar_campeones()
     j = res.destacado
-    texto = armar_mensaje(res, hablado=False)
+    remates = REMATES_MEJOR if res.gano else REMATES_PEOR
+    remate = random.choice(remates) if remates else ""
+    texto = f"{armar_mensaje(res, hablado=False)} {remate}".strip()
+    partes_voz = [armar_mensaje(res, hablado=True)] + ([remate] if remate else [])
     contenido = f"📢 {texto}"
     if not res.gano:
         try:
@@ -381,7 +400,7 @@ async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.Voic
             log.exception("No se pudo mandar el resumen de texto")
     if canal_voz:
         try:
-            await hablar(canal_voz, armar_mensaje(res, hablado=True))
+            await hablar(canal_voz, partes_voz)
         except Exception:
             log.exception("No se pudo anunciar por voz")
 
