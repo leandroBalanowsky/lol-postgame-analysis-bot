@@ -52,9 +52,15 @@ def main():
         # La pista (nombres propios de la frase) ayuda a que Whisper los escriba bien.
         oido = modelo.transcribe(audio, language="es", fp16=False, condition_on_previous_text=False,
                                  initial_prompt=tarea.get("pista") or None)["text"].strip()
-        parecido = difflib.SequenceMatcher(None, normalizar(tarea["texto"]), normalizar(oido)).ratio()
+        esperado, escuchado = normalizar(tarea["texto"]), normalizar(oido)
+        iguales = sum(b.size for b in difflib.SequenceMatcher(None, esperado, escuchado, autojunk=False)
+                      .get_matching_blocks())
+        # cobertura: qué parte de lo esperado se escuchó (detecta palabras que faltan)
+        # sobrante: cuánto se escuchó de más (detecta repeticiones y palabras inventadas)
         print(json.dumps({"texto": tarea["texto"], "salida": tarea["salida"], "oido": oido,
-                          "parecido": round(parecido, 3), "duracion": round(duracion, 1)},
+                          "cobertura": round(iguales / max(1, len(esperado)), 3),
+                          "sobrante": round((len(escuchado) - iguales) / max(1, len(esperado)), 3),
+                          "duracion": round(duracion, 1)},
                          ensure_ascii=False), flush=True)
 
 

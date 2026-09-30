@@ -51,47 +51,82 @@ async def campeones_por_vinculo(vinculos: list[dict], mejores: int, todos: bool)
 
 
 INFORME = bot.BASE_DIR / "verificacion_voces.txt"
-UMBRAL_DUDOSO = 0.85  # parecido entre lo esperado y lo que entendió Whisper
+# Un audio es dudoso si a lo que entendió Whisper le falta parte de la frase (cobertura baja)
+# o le sobra texto (repeticiones o palabras inventadas). Los límites se eligieron mirando un
+# lote real: dejan pasar los errores de Whisper en palabras cortas ("carreador" -> "cariada").
+COBERTURA_MINIMA = 0.88
+SOBRANTE_MAXIMO = 0.15
+INTENTOS_CORREGIR = 3
 
 
-def verificar(xtts_python: Path, tareas: list[dict], limite: int):
-    """Transcribe los audios con Whisper y deja un informe con los que no coinciden con su texto."""
-    if limite:
-        tareas = tareas[:limite]
-    print(f"Verificando {len(tareas)} audios con Whisper...", flush=True)
+def es_dudoso(r: dict) -> bool:
+    return r["cobertura"] < COBERTURA_MINIMA or r["sobrante"] > SOBRANTE_MAXIMO
+
+
+def escribir_lote(tareas: list[dict]) -> str:
+    """Guarda las tareas en un JSON temporal para pasárselas a un script del entorno de XTTS."""
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
         json.dump(tareas, f, ensure_ascii=False)
+    return f.name
+
+
+def generar(xtts_python: Path, referencia: Path, tareas: list[dict]):
+    """Genera los audios con XTTS (carga el modelo una sola vez para todo el lote)."""
+    archivo = escribir_lote(tareas)
+    try:
+        subprocess.run([str(xtts_python), "-W", "ignore", str(bot.BASE_DIR / "voz_xtts.py"),
+                        "--lote", archivo, "--referencia", str(referencia),
+                        "--temperatura", bot.XTTS_TEMPERATURA], check=False)
+    finally:
+        Path(archivo).unlink(missing_ok=True)
+
+
+def transcribir(xtts_python: Path, tareas: list[dict]) -> list[dict]:
+    """Transcribe los audios con Whisper y devuelve cobertura y sobrante de cada uno."""
+    print(f"Verificando {len(tareas)} audios con Whisper...", flush=True)
+    archivo = escribir_lote(tareas)
     resultados = []
     try:
-        proceso = subprocess.Popen([str(xtts_python), "-W", "ignore", str(bot.BASE_DIR / "verificar_xtts.py"), f.name],
+        proceso = subprocess.Popen([str(xtts_python), "-W", "ignore", str(bot.BASE_DIR / "verificar_xtts.py"), archivo],
                                    stdout=subprocess.PIPE, text=True, encoding="utf-8")
         for linea in proceso.stdout:
             r = json.loads(linea)
             resultados.append(r)
-            marca = "  " if r["parecido"] >= UMBRAL_DUDOSO else "⚠️"
-            print(f"{len(resultados)}/{len(tareas)} {marca} {r['parecido']:.2f} · {r['oido']}", flush=True)
+            marca = "⚠️" if es_dudoso(r) else "  "
+            print(f"{len(resultados)}/{len(tareas)} {marca} cob {r['cobertura']:.2f} sob {r['sobrante']:.2f}"
+                  f" · {r['oido']}", flush=True)
         proceso.wait()
     finally:
-        Path(f.name).unlink(missing_ok=True)
+        Path(archivo).unlink(missing_ok=True)
+    return resultados
 
-    resultados.sort(key=lambda r: r["parecido"])
-    dudosos = [r for r in resultados if r["parecido"] < UMBRAL_DUDOSO]
+
+def escribir_informe(resultados: list[dict]):
+    resultados = sorted(resultados, key=lambda r: min(r["cobertura"], 1 - r["sobrante"]))
+    dudosos = [r for r in resultados if es_dudoso(r)]
     with INFORME.open("w", encoding="utf-8") as inf:
-        inf.write(f"{len(resultados)} audios verificados · {len(dudosos)} dudosos (parecido < {UMBRAL_DUDOSO})\n")
-        inf.write("Ordenados del menos parecido al más parecido.\n\n")
+        inf.write(f"{len(resultados)} audios verificados · {len(dudosos)} dudosos "
+                  f"(cobertura < {COBERTURA_MINIMA} o sobrante > {SOBRANTE_MAXIMO})\n")
+        inf.write("cobertura: parte de la frase que se escuchó (baja = faltan palabras)\n"
+                  "sobrante: texto de más (alto = repeticiones o palabras inventadas)\n"
+                  "Ordenados del más sospechoso al menos sospechoso.\n\n")
         for r in resultados:
-            inf.write(f"{r['parecido']:.2f} · {r['duracion']}s · {Path(r['salida']).name}\n"
+            inf.write(f"{'⚠️ ' if es_dudoso(r) else ''}cob {r['cobertura']:.2f} · sob {r['sobrante']:.2f}"
+                      f" · {r['duracion']}s · {Path(r['salida']).name}\n"
                       f"   esperado: {r['texto']}\n   entendido: {r['oido']}\n\n")
     print(f"\n{len(dudosos)} dudosos de {len(resultados)}. Informe completo: {INFORME}")
+    return dudosos
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--mejores", type=int, default=20, help="campeones con más maestría por vinculado")
     p.add_argument("--todos", action="store_true", help="todos los campeones para cada vinculado")
-    p.add_argument("--limite", type=int, default=0, help="generar solo los primeros N (para probar)")
+    p.add_argument("--limite", type=int, default=0, help="procesar solo los primeros N (para probar)")
     p.add_argument("--verificar", action="store_true",
                    help="en vez de generar, transcribir con Whisper los ya generados y marcar los dudosos")
+    p.add_argument("--corregir", action="store_true",
+                   help=f"con --verificar: regenerar los dudosos y volver a verificarlos (hasta {INTENTOS_CORREGIR} veces)")
     args = p.parse_args()
 
     xtts_python = bot.BASE_DIR / bot.XTTS_PYTHON
@@ -118,29 +153,34 @@ def main():
     for posicion in list(bot.POSICIONES_RANDOM) + [""]:
         for gano in (False, True):
             textos[presentacion(None, "-", gano, posicion)] = "random, top, jungla, mid, ADC, support."
+    tareas = [{"texto": t, "salida": str(bot.ruta_xtts(t)), "pista": textos[t]} for t in sorted(textos)]
 
     if args.verificar:
-        verificar(xtts_python, [{"texto": t, "salida": str(bot.ruta_xtts(t)), "pista": textos[t]}
-                                for t in sorted(textos) if bot.ruta_xtts(t).exists()], args.limite)
+        guardadas = [t for t in tareas if Path(t["salida"]).exists()]
+        if args.limite:
+            guardadas = guardadas[:args.limite]
+        resultados = {r["salida"]: r for r in transcribir(xtts_python, guardadas)}
+        dudosos = escribir_informe(list(resultados.values()))
+        for intento in range(1, INTENTOS_CORREGIR + 1):
+            if not args.corregir or not dudosos:
+                break
+            print(f"\n== Corrección {intento}/{INTENTOS_CORREGIR}: regenerando {len(dudosos)} audios", flush=True)
+            for r in dudosos:
+                Path(r["salida"]).unlink(missing_ok=True)
+            rehacer = [t for t in guardadas if t["salida"] in {r["salida"] for r in dudosos}]
+            generar(xtts_python, referencia, rehacer)
+            resultados.update({r["salida"]: r for r in transcribir(xtts_python, rehacer)})
+            dudosos = escribir_informe(list(resultados.values()))
         return
 
-    pendientes = [{"texto": t, "salida": str(bot.ruta_xtts(t))} for t in sorted(textos)
-                  if not bot.ruta_xtts(t).exists()]
-    print(f"{len(vinculos)} vinculados · {len(textos)} audios en total"
-          f" · {len(textos) - len(pendientes)} ya guardados · {len(pendientes)} por generar", flush=True)
+    pendientes = [t for t in tareas if not Path(t["salida"]).exists()]
+    print(f"{len(vinculos)} vinculados · {len(tareas)} audios en total"
+          f" · {len(tareas) - len(pendientes)} ya guardados · {len(pendientes)} por generar", flush=True)
     if args.limite:
         pendientes = pendientes[:args.limite]
     if not pendientes:
         return
-
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
-        json.dump(pendientes, f, ensure_ascii=False)
-    try:
-        subprocess.run([str(xtts_python), "-W", "ignore", str(bot.BASE_DIR / "voz_xtts.py"),
-                        "--lote", f.name, "--referencia", str(referencia),
-                        "--temperatura", bot.XTTS_TEMPERATURA], check=False)
-    finally:
-        Path(f.name).unlink(missing_ok=True)
+    generar(xtts_python, referencia, pendientes)
     faltan = sum(not Path(t["salida"]).exists() for t in pendientes)
     print("Listo." if not faltan else f"Terminó con {faltan} audios sin generar; se pueden reintentar corriéndolo de nuevo.")
 
