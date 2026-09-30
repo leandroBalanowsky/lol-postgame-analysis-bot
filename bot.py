@@ -132,33 +132,57 @@ def ruta_xtts(texto: str) -> Path:
     return CACHE_DIR / (hashlib.md5(clave.encode()).hexdigest() + ".wav")
 
 
-async def generar_audio_xtts(texto: str) -> Path:
-    """Genera con XTTS en un proceso aparte, que carga el modelo, genera y se cierra."""
-    referencia = (BASE_DIR / XTTS_REFERENCIA).resolve()
-    ruta = ruta_xtts(texto)
-    if ruta.exists():
-        return ruta
+XTTS_TOPE_SEGUNDOS = 15 * 60  # si XTTS se cuelga, se corta igual: no puede ocupar la placa para siempre
+xtts_en_curso: dict[Path, asyncio.Task] = {}  # generaciones en marcha, por archivo de destino
+
+
+async def _generar_xtts(texto: str, ruta: Path):
+    """Corre XTTS en un proceso aparte, que carga el modelo, genera, guarda el audio y se cierra."""
     async with xtts_lock:
-        if ruta.exists():  # lo generó otro anuncio mientras esperaba
-            return ruta
+        if ruta.exists():  # lo generó otra generación mientras esperaba
+            return
         inicio = time.monotonic()
         proceso = await asyncio.create_subprocess_exec(
             str((BASE_DIR / XTTS_PYTHON).resolve()), "-W", "ignore", str(BASE_DIR / "voz_xtts.py"),
-            "--texto", texto, "--salida", str(ruta), "--referencia", str(referencia),
+            "--texto", texto, "--salida", str(ruta), "--referencia", str((BASE_DIR / XTTS_REFERENCIA).resolve()),
             "--temperatura", XTTS_TEMPERATURA,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # sin ventana de consola
         )
         try:
-            _, error = await asyncio.wait_for(proceso.communicate(), timeout=XTTS_TIMEOUT)
+            _, error = await asyncio.wait_for(proceso.communicate(), timeout=XTTS_TOPE_SEGUNDOS)
         except asyncio.TimeoutError:
             proceso.kill()
             await proceso.wait()
-            raise RuntimeError(f"XTTS tardó más de {XTTS_TIMEOUT}s")
+            raise RuntimeError(f"XTTS se colgó más de {XTTS_TOPE_SEGUNDOS // 60} minutos y se cortó")
         if proceso.returncode != 0 or not ruta.exists():
             ultima = error.decode("utf-8", "replace").strip().splitlines()[-1:] or ["sin detalle"]
             raise RuntimeError(f"XTTS falló (código {proceso.returncode}): {ultima[0]}")
-        log.info("Audio XTTS generado en %.0fs", time.monotonic() - inicio)
+        log.info("Audio XTTS generado en %.0fs: %s", time.monotonic() - inicio, texto)
+
+
+def _fin_generacion(ruta: Path, tarea: asyncio.Task):
+    xtts_en_curso.pop(ruta, None)
+    if not tarea.cancelled() and tarea.exception():
+        log.warning("Generación XTTS en segundo plano: %s", tarea.exception())
+
+
+async def generar_audio_xtts(texto: str) -> Path:
+    """Audio XTTS del texto: guardado, o generado esperando como mucho XTTS_TIMEOUT segundos.
+
+    Si tarda más, se lanza TimeoutError pero la generación sigue en segundo plano y el audio
+    queda guardado para la próxima vez.
+    """
+    ruta = ruta_xtts(texto)
+    if ruta.exists():
+        return ruta
+    tarea = xtts_en_curso.get(ruta)
+    if tarea is None:  # si ya se está generando (ej: anuncio anterior que tardó), se espera esa
+        tarea = asyncio.create_task(_generar_xtts(texto, ruta))
+        xtts_en_curso[ruta] = tarea
+        tarea.add_done_callback(lambda t: _fin_generacion(ruta, t))
+    # shield: si se vence la espera, no se cancela la generación
+    await asyncio.wait_for(asyncio.shield(tarea), timeout=XTTS_TIMEOUT)
     return ruta
 
 
@@ -166,6 +190,9 @@ async def generar_audio(texto: str) -> Path:
     if VOZ_MOTOR == "xtts":
         try:
             return await generar_audio_xtts(texto)
+        except asyncio.TimeoutError:
+            log.warning("XTTS tarda más de %ss: este anuncio sale con edge-tts y el audio se sigue "
+                        "generando para la próxima vez", XTTS_TIMEOUT)
         except Exception as e:
             log.warning("No se pudo generar con XTTS (%s); se usa edge-tts para este anuncio", e)
     return await generar_audio_edge(texto)
