@@ -66,6 +66,7 @@ PAUSA_ANUNCIO = float(os.getenv("PAUSA_ANUNCIO") or 0.8)  # entre "…del equipo
 PAUSA_PARTES = float(os.getenv("PAUSA_PARTES") or 0.15)  # entre el nombre y "con Campeón"
 PAUSA_REMATE = float(os.getenv("PAUSA_REMATE") or 0.5)  # antes del remate
 NOMBRE_GANANCIA = float(os.getenv("NOMBRE_GANANCIA") or 1.3)  # volumen del nombre respecto del resto
+NOMBRE_SUFIJO = os.getenv("NOMBRE_SUFIJO", "").strip()  # se agrega al nombre en la voz: "kun" -> "¡¡Adroco kun!!"
 INTERVALO = int(os.getenv("INTERVALO_SEGUNDOS") or 90)  # cada cuánto revisa partidas nuevas
 # Partidas que terminaron hace más que esto no se anuncian (ej: el bot estuvo apagado)
 MAX_ANTIGUEDAD_MIN = int(os.getenv("MAX_ANTIGUEDAD_MIN") or 20)
@@ -352,11 +353,13 @@ def nombre_vinculado(j: Jugador, hablado: bool = False) -> str | None:
 # Cómo se nombra a un jugador sin vincular según su posición. En minúscula (salvo ADC) para
 # que la voz no lo deletree.
 POSICIONES_RANDOM = {"TOP": "top", "JUNGLE": "jungla", "MIDDLE": "mid", "BOTTOM": "ADC", "UTILITY": "support"}
+# Para la voz, las que suenan mejor escritas de otra forma
+POSICIONES_HABLADAS = {**POSICIONES_RANDOM, "BOTTOM": "adece"}
 
 
-def random_generico(j: Jugador) -> str:
+def random_generico(j: Jugador, hablado: bool = False) -> str:
     """Nombre genérico de un jugador sin vincular: "el random de top" (o "del equipo" en ARAM)."""
-    posicion = POSICIONES_RANDOM.get(j.posicion)
+    posicion = (POSICIONES_HABLADAS if hablado else POSICIONES_RANDOM).get(j.posicion)
     return f"el random de {posicion}" if posicion else "el random del equipo"
 
 
@@ -370,8 +373,8 @@ def jugador_texto(j: Jugador, enfasis: bool = False, hablado: bool = False) -> s
     campeon = riot.nombre_campeon(j.campeon)
     nombre = nombre_vinculado(j, hablado)
     if enfasis:
-        return f"¡{nombre}! con {campeon}" if nombre else f"¡{random_generico(j)}!"
-    return f"{nombre} con {campeon}" if nombre else random_generico(j)
+        return f"¡{nombre}! con {campeon}" if nombre else f"¡{random_generico(j, hablado)}!"
+    return f"{nombre} con {campeon}" if nombre else random_generico(j, hablado)
 
 
 COLAS = {
@@ -514,10 +517,15 @@ def frase_inicio(gano: bool) -> Frase:
 
 
 def frase_nombre(j: Jugador) -> Frase:
-    """El nombre con énfasis: doble admiración y más volumen. Al sin vincular, su posición."""
+    """El nombre con énfasis: doble admiración, más volumen y el sufijo ("¡¡Adroco kun!!").
+
+    Al sin vincular, su posición ("¡¡el random de top kun!!").
+    """
     persona = nombre_vinculado(j)
-    dicho = nombre_vinculado(j, hablado=True) if persona else random_generico(j)
-    return Frase(f"¡¡{dicho}!!", "_partes/nombres", persona or dicho, recortar=True, ganancia=NOMBRE_GANANCIA)
+    dicho = nombre_vinculado(j, hablado=True) if persona else random_generico(j, hablado=True)
+    dicho = f"{dicho} {NOMBRE_SUFIJO}".strip()
+    return Frase(f"¡¡{dicho}!!", "_partes/nombres", persona or random_generico(j),
+                 recortar=True, ganancia=NOMBRE_GANANCIA)
 
 
 def frase_campeon(campeon: str) -> Frase:
@@ -541,7 +549,7 @@ def armar_mensaje(res: Resultado, hablado: bool) -> str:
     texto = (MENSAJE_MEJOR if res.gano else MENSAJE_PEOR).format(
         jugador=jugador_texto(j, hablado=hablado),
         jugador_enfasis=jugador_texto(j, enfasis=True, hablado=hablado),
-        nombre=nombre_vinculado(j, hablado) or random_generico(j),
+        nombre=nombre_vinculado(j, hablado) or random_generico(j, hablado),
         campeon=riot.nombre_campeon(j.campeon),
         kills=j.kills, muertes=j.deaths, asistencias=j.assists,
         kda=j.kda_texto, puntaje=round(j.puntaje),

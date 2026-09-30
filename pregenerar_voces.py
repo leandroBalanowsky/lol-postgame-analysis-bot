@@ -164,9 +164,10 @@ def main():
                 textos[bot.frase_inicio(gano)] = ""
         for vinculo in vinculos:
             nombre = vinculo.get("pronunciacion") or vinculo["riot_id"].split("#")[0]
-            textos[bot.frase_nombre(jugador(vinculo, "-"))] = f"{nombre}."
+            textos[bot.frase_nombre(jugador(vinculo, "-"))] = f"{nombre} {bot.NOMBRE_SUFIJO}.".replace(" .", ".")
         for posicion in list(bot.POSICIONES_RANDOM) + [""]:
-            textos[bot.frase_nombre(jugador(None, "-", posicion))] = "random, top, jungla, mid, ADC, support."
+            textos[bot.frase_nombre(jugador(None, "-", posicion))] = (f"random, top, jungla, mid, adece, support, "
+                                                                      f"{bot.NOMBRE_SUFIJO}.")
         for campeon in bot.riot.campeones:
             textos[bot.frase_campeon(campeon)] = f"{bot.riot.nombre_campeon(campeon)}."
     else:
