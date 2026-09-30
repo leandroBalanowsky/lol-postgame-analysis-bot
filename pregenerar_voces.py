@@ -1,6 +1,10 @@
-﻿"""Genera de antemano los audios XTTS de los anuncios más probables.
+"""Genera de antemano los audios XTTS de los anuncios.
 
-Por defecto: para cada jugador vinculado, sus N campeones con más maestría (20), en
+Con VOZ_MODO=partes: los inicios ("El más manco del equipo fue"), el nombre de cada
+vinculado y de cada posición ("el random de top"), "con <campeón>" para todos los
+campeones y los remates (~190 audios, cubren cualquier anuncio).
+
+Con VOZ_MODO=enteras, por defecto: para cada jugador vinculado, sus N campeones con más maestría (20), en
 derrota y en victoria; los genéricos de los sin vincular ("el random de top", uno por
 posición); y todos los remates. Los demás campeones de los vinculados se generan en el
 momento del anuncio. Con --todos genera todos los campeones para cada vinculado.
@@ -23,11 +27,17 @@ import bot
 from analisis import Jugador, Resultado, TotalesEquipo
 
 
+def jugador(vinculo: dict | None, campeon: str, posicion: str = "") -> Jugador:
+    """Un jugador de mentira con lo único que importa para armar la voz: quién es y su campeón."""
+    return Jugador(puuid=vinculo["puuid"] if vinculo else "-",
+                   nombre=vinculo["riot_id"].split("#")[0] if vinculo else "-",
+                   campeon=campeon, posicion=posicion, kills=0, deaths=0, assists=0,
+                   farm_min=0, dano_min=0, vision_min=0, kp=0)
+
+
 def presentacion(vinculo: dict | None, campeon: str, gano: bool, posicion: str = "") -> "bot.Frase":
-    """La presentación hablada (texto y carpeta), igual a la que armaría el bot en un anuncio real."""
-    j = Jugador(puuid=vinculo["puuid"] if vinculo else "-", nombre=vinculo["riot_id"].split("#")[0] if vinculo else "-",
-                campeon=campeon, posicion=posicion, kills=0, deaths=0, assists=0,
-                farm_min=0, dano_min=0, vision_min=0, kp=0)
+    """La presentación hablada entera (texto y carpeta), igual a la que armaría el bot en un anuncio real."""
+    j = jugador(vinculo, campeon, posicion)
     vacio = TotalesEquipo(0, 0, 0, 0, 0, 0)
     return bot.frase_presentacion(Resultado("-", "", 0, 0, 0, gano, [j], vacio, vacio))
 
@@ -136,7 +146,9 @@ def main():
 
     vinculos = list(bot.datos["vinculos"].values())
     try:
-        elegidos = asyncio.run(campeones_por_vinculo(vinculos, args.mejores, args.todos))
+        # En modo partes los campeones no dependen del jugador: no hace falta la maestría
+        elegidos = asyncio.run(campeones_por_vinculo(vinculos, args.mejores,
+                                                     args.todos or bot.VOZ_MODO == "partes"))
     except bot.RiotError as e:
         sys.exit(f"No se pudo consultar a Riot: {e}")
     if not bot.riot.campeones:
@@ -145,16 +157,30 @@ def main():
     # frase -> pista para Whisper al verificar (los nombres propios que se dicen)
     textos = {bot.frase_remate(r, gano): "" for gano, remates in ((False, bot.REMATES_PEOR),
                                                                     (True, bot.REMATES_MEJOR)) for r in remates}
-    for vinculo in vinculos:
-        nombre = vinculo.get("pronunciacion") or vinculo["riot_id"].split("#")[0]
-        for campeon in elegidos.get(vinculo["puuid"], []):
-            for gano in (False, True):
-                textos[presentacion(vinculo, campeon, gano)] = f"{nombre}, {bot.riot.nombre_campeon(campeon)}."
-    # Sin vincular: uno por posición ("el random de top"), más el de ARAM (sin posición)
-    for posicion in list(bot.POSICIONES_RANDOM) + [""]:
+    if bot.VOZ_MODO == "partes":
+        # Partes que se unen al anunciar: inicios, nombres, campeones (todos: son uno por campeón)
         for gano in (False, True):
-            textos[presentacion(None, "-", gano, posicion)] = "random, top, jungla, mid, ADC, support."
-    tareas = [{"texto": f.texto, "salida": str(bot.ruta_xtts(f)), "pista": pista}
+            if bot.inicio_del_mensaje(gano):
+                textos[bot.frase_inicio(gano)] = ""
+        for vinculo in vinculos:
+            nombre = vinculo.get("pronunciacion") or vinculo["riot_id"].split("#")[0]
+            textos[bot.frase_nombre(jugador(vinculo, "-"))] = f"{nombre}."
+        for posicion in list(bot.POSICIONES_RANDOM) + [""]:
+            textos[bot.frase_nombre(jugador(None, "-", posicion))] = "random, top, jungla, mid, ADC, support."
+        for campeon in bot.riot.campeones:
+            textos[bot.frase_campeon(campeon)] = f"{bot.riot.nombre_campeon(campeon)}."
+    else:
+        for vinculo in vinculos:
+            nombre = vinculo.get("pronunciacion") or vinculo["riot_id"].split("#")[0]
+            for campeon in elegidos.get(vinculo["puuid"], []):
+                for gano in (False, True):
+                    textos[presentacion(vinculo, campeon, gano)] = f"{nombre}, {bot.riot.nombre_campeon(campeon)}."
+        # Sin vincular: uno por posición ("el random de top"), más el de ARAM (sin posición)
+        for posicion in list(bot.POSICIONES_RANDOM) + [""]:
+            for gano in (False, True):
+                textos[presentacion(None, "-", gano, posicion)] = "random, top, jungla, mid, ADC, support."
+    tareas = [{"texto": f.texto, "salida": str(bot.ruta_xtts(f)), "pista": pista, "recortar": f.recortar,
+               "ganancia": f.ganancia, "silencio_final": 0 if f.recortar else 0.5}
               for f, pista in sorted(textos.items(), key=lambda x: (x[0].carpeta, x[0].nombre))]
 
     if args.verificar:

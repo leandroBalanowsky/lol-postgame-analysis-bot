@@ -6,3 +6,4 @@ datos.json
 __pycache__/
 .venv/
 verificacion_voces.txt
+audios_respaldo*/

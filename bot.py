@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -56,6 +57,15 @@ XTTS_PYTHON = os.getenv("XTTS_PYTHON", "").strip()  # python.exe del entorno con
 XTTS_REFERENCIA = os.getenv("XTTS_REFERENCIA", "").strip()  # audio de la voz a clonar
 XTTS_TEMPERATURA = os.getenv("XTTS_TEMPERATURA", "0.75").strip()
 XTTS_TIMEOUT = int(os.getenv("XTTS_TIMEOUT_SEGUNDOS") or 180)
+# Cómo se arma la voz con XTTS:
+#   enteras: la presentación entera en un audio ("El carreador del equipo fue ¡Adroco! con Swain.")
+#   partes: inicio + nombre + campeón en audios separados que se unen al anunciar. Con muy pocos
+#           audios (~190) se cubre cualquier jugador con cualquier campeón.
+VOZ_MODO = os.getenv("VOZ_MODO", "enteras").strip().lower()
+PAUSA_ANUNCIO = float(os.getenv("PAUSA_ANUNCIO") or 0.8)  # entre "…del equipo fue" y el nombre
+PAUSA_PARTES = float(os.getenv("PAUSA_PARTES") or 0.15)  # entre el nombre y "con Campeón"
+PAUSA_REMATE = float(os.getenv("PAUSA_REMATE") or 0.5)  # antes del remate
+NOMBRE_GANANCIA = float(os.getenv("NOMBRE_GANANCIA") or 1.3)  # volumen del nombre respecto del resto
 INTERVALO = int(os.getenv("INTERVALO_SEGUNDOS") or 90)  # cada cuánto revisa partidas nuevas
 # Partidas que terminaron hace más que esto no se anuncian (ej: el bot estuvo apagado)
 MAX_ANTIGUEDAD_MIN = int(os.getenv("MAX_ANTIGUEDAD_MIN") or 20)
@@ -136,8 +146,10 @@ class Frase:
     se guarda en audios/Churlenscuincle/Ahri - derrota - 3fa2c1.wav
     """
     texto: str
-    carpeta: str = "_otros"
+    carpeta: str = "_otros"  # puede tener subcarpetas: "_partes/nombres"
     nombre: str = ""
+    recortar: bool = False  # sin silencio al principio ni al final (para unirla con otras partes)
+    ganancia: float = 1.0  # volumen (ej: 1.3 para el nombre, con más énfasis)
 
 
 def _nombre_archivo(texto: str) -> str:
@@ -152,17 +164,21 @@ def ruta_xtts(frase: Frase) -> Path:
     """
     referencia = (BASE_DIR / XTTS_REFERENCIA).resolve()
     clave = f"xtts|{referencia.name}|{referencia.stat().st_mtime}|{XTTS_TEMPERATURA}|{frase.texto}"
+    if frase.recortar or frase.ganancia != 1.0:
+        clave += f"|recortar={frase.recortar}|ganancia={frase.ganancia}"
     codigo = hashlib.md5(clave.encode()).hexdigest()[:6]
-    return (CACHE_DIR / _nombre_archivo(frase.carpeta)
-            / f"{_nombre_archivo(frase.nombre or frase.texto)} - {codigo}.wav")
+    carpeta = CACHE_DIR.joinpath(*(_nombre_archivo(c) for c in frase.carpeta.split("/")))
+    return carpeta / f"{_nombre_archivo(frase.nombre or frase.texto)} - {codigo}.wav"
 
 
 XTTS_TOPE_SEGUNDOS = 15 * 60  # si XTTS se cuelga, se corta igual: no puede ocupar la placa para siempre
 xtts_en_curso: dict[Path, asyncio.Task] = {}  # generaciones en marcha, por archivo de destino
 
 
-async def _generar_xtts(texto: str, ruta: Path):
+async def _generar_xtts(frase: Frase, ruta: Path):
     """Corre XTTS en un proceso aparte, que carga el modelo, genera, guarda el audio y se cierra."""
+    opciones = ["--recortar", "--silencio-final", "0"] if frase.recortar else []
+    opciones += ["--ganancia", str(frase.ganancia)] if frase.ganancia != 1.0 else []
     async with xtts_lock:
         if ruta.exists():  # lo generó otra generación mientras esperaba
             return
@@ -170,8 +186,8 @@ async def _generar_xtts(texto: str, ruta: Path):
         inicio = time.monotonic()
         proceso = await asyncio.create_subprocess_exec(
             str((BASE_DIR / XTTS_PYTHON).resolve()), "-W", "ignore", str(BASE_DIR / "voz_xtts.py"),
-            "--texto", texto, "--salida", str(ruta), "--referencia", str((BASE_DIR / XTTS_REFERENCIA).resolve()),
-            "--temperatura", XTTS_TEMPERATURA,
+            "--texto", frase.texto, "--salida", str(ruta),
+            "--referencia", str((BASE_DIR / XTTS_REFERENCIA).resolve()), "--temperatura", XTTS_TEMPERATURA, *opciones,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # sin ventana de consola
         )
@@ -184,7 +200,7 @@ async def _generar_xtts(texto: str, ruta: Path):
         if proceso.returncode != 0 or not ruta.exists():
             ultima = error.decode("utf-8", "replace").strip().splitlines()[-1:] or ["sin detalle"]
             raise RuntimeError(f"XTTS falló (código {proceso.returncode}): {ultima[0]}")
-        log.info("Audio XTTS generado en %.0fs: %s", time.monotonic() - inicio, texto)
+        log.info("Audio XTTS generado en %.0fs: %s", time.monotonic() - inicio, frase.texto)
 
 
 def _fin_generacion(ruta: Path, tarea: asyncio.Task):
@@ -204,7 +220,7 @@ async def generar_audio_xtts(frase: Frase) -> Path:
         return ruta
     tarea = xtts_en_curso.get(ruta)
     if tarea is None:  # si ya se está generando (ej: anuncio anterior que tardó), se espera esa
-        tarea = asyncio.create_task(_generar_xtts(frase.texto, ruta))
+        tarea = asyncio.create_task(_generar_xtts(frase, ruta))
         xtts_en_curso[ruta] = tarea
         tarea.add_done_callback(lambda t: _fin_generacion(ruta, t))
     # shield: si se vence la espera, no se cancela la generación
@@ -252,24 +268,66 @@ async def conectar(canal: discord.VoiceChannel) -> discord.VoiceClient:
     return vc
 
 
-async def hablar(canal: discord.VoiceChannel, partes: list[Frase]):
+def unir_wavs(piezas: list[Path | float]) -> Path | None:
+    """Une audios WAV y silencios (en segundos) en un solo archivo, que queda guardado.
+
+    Devuelve None si no se pueden unir (por ejemplo, si una parte salió con edge-tts en mp3):
+    en ese caso se reproducen una tras otra.
+    """
+    rutas = [p for p in piezas if isinstance(p, Path)]
+    if not rutas or any(r.suffix != ".wav" for r in rutas):
+        return None
+    clave = "|".join(p.name if isinstance(p, Path) else f"{p:.2f}" for p in piezas)
+    destino = CACHE_DIR / "_armados" / (hashlib.md5(clave.encode()).hexdigest() + ".wav")
+    if destino.exists():
+        return destino
+    with wave.open(str(rutas[0]), "rb") as w:
+        formato = w.getparams()
+    destino.parent.mkdir(exist_ok=True)
+    temporal = destino.with_suffix(".tmp")
+    compatibles = True
+    with wave.open(str(temporal), "wb") as salida:
+        salida.setparams(formato)
+        for pieza in piezas:
+            if isinstance(pieza, Path):
+                with wave.open(str(pieza), "rb") as w:
+                    if (w.getnchannels(), w.getsampwidth(), w.getframerate()) != \
+                            (formato.nchannels, formato.sampwidth, formato.framerate):
+                        compatibles = False
+                        break
+                    salida.writeframes(w.readframes(w.getnframes()))
+            else:
+                salida.writeframes(b"\x00" * int(formato.framerate * pieza) * formato.sampwidth * formato.nchannels)
+    if not compatibles:  # formatos distintos: no se pueden unir
+        temporal.unlink(missing_ok=True)
+        return None
+    temporal.replace(destino)  # ya cerrado: Windows no deja renombrar un archivo abierto
+    return destino
+
+
+async def hablar(canal: discord.VoiceChannel, partes: list[Frase | float]):
     """Entra al canal, dice las partes una tras otra y se va.
 
-    Cada parte es un audio aparte (así se reutilizan: el remate sirve para cualquier jugador).
-    Los audios XTTS terminan con medio segundo de silencio, que hace de pausa entre partes.
+    Cada parte es un audio aparte (así se reutilizan: el remate sirve para cualquier jugador);
+    los números son pausas en segundos. Las partes se unen en un solo audio antes de hablar.
     """
     lock = locks.setdefault(canal.guild.id, asyncio.Lock())
     async with lock:
         if not any(not m.bot for m in canal.members):
             return
-        rutas = [await generar_audio(p) for p in partes]  # todo listo antes de entrar a hablar
+        # todo listo antes de entrar a hablar
+        piezas = [await generar_audio(p) if isinstance(p, Frase) else p for p in partes]
+        unido = unir_wavs(piezas)
         if not any(not m.bot for m in canal.members):  # se fueron mientras se generaba el audio
             return
         vc = await conectar(canal)
         try:
-            log.info("Diciendo en #%s: %s", canal.name, " ".join(p.texto for p in partes))
-            for ruta in rutas:
-                await reproducir(vc, ruta)
+            log.info("Diciendo en #%s: %s", canal.name, " ".join(p.texto for p in partes if isinstance(p, Frase)))
+            for pieza in [unido] if unido else piezas:
+                if isinstance(pieza, Path):
+                    await reproducir(vc, pieza)
+                else:
+                    await asyncio.sleep(pieza)
         finally:
             await vc.disconnect()
 
@@ -440,6 +498,43 @@ def frase_remate(remate: str, gano: bool) -> Frase:
     return Frase(remate, "_remates", f"{'victoria' if gano else 'derrota'} - {remate}")
 
 
+def inicio_del_mensaje(gano: bool) -> str | None:
+    """Lo que va antes del nombre ("El más manco del equipo fue"), si el mensaje se puede partir."""
+    plantilla = MENSAJE_MEJOR if gano else MENSAJE_PEOR
+    if plantilla.count("{jugador_enfasis}") != 1:
+        return None
+    antes, despues = plantilla.split("{jugador_enfasis}")
+    if "{" in antes or despues.strip() not in ("", ".", "!"):  # algo más después del nombre: no se parte
+        return None
+    return antes.strip()
+
+
+def frase_inicio(gano: bool) -> Frase:
+    return Frase(inicio_del_mensaje(gano), "_partes/inicios", "victoria" if gano else "derrota", recortar=True)
+
+
+def frase_nombre(j: Jugador) -> Frase:
+    """El nombre con énfasis: doble admiración y más volumen. Al sin vincular, su posición."""
+    persona = nombre_vinculado(j)
+    dicho = nombre_vinculado(j, hablado=True) if persona else random_generico(j)
+    return Frase(f"¡¡{dicho}!!", "_partes/nombres", persona or dicho, recortar=True, ganancia=NOMBRE_GANANCIA)
+
+
+def frase_campeon(campeon: str) -> Frase:
+    nombre = riot.nombre_campeon(campeon)
+    return Frase(f"con {nombre}.", "_partes/campeones", nombre, recortar=True)
+
+
+def partes_anuncio(res: Resultado, remate: str) -> list[Frase | float]:
+    """Los audios del anuncio y las pausas entre ellos (en segundos)."""
+    final = [PAUSA_REMATE, frase_remate(remate, res.gano)] if remate else []
+    if VOZ_MOTOR != "xtts" or VOZ_MODO != "partes" or inicio_del_mensaje(res.gano) is None:
+        return [frase_presentacion(res)] + final
+    j = res.destacado
+    campeon = [PAUSA_PARTES, frase_campeon(j.campeon)] if nombre_vinculado(j) else []
+    return [frase_inicio(res.gano), PAUSA_ANUNCIO, frase_nombre(j)] + campeon + final
+
+
 def armar_mensaje(res: Resultado, hablado: bool) -> str:
     """El mensaje del anuncio, sin el remate. hablado=True usa la pronunciación de los nombres."""
     j = res.destacado
@@ -462,7 +557,7 @@ async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.Voic
     remates = REMATES_MEJOR if res.gano else REMATES_PEOR
     remate = random.choice(remates) if remates else ""
     texto = f"{armar_mensaje(res, hablado=False)} {remate}".strip()
-    partes_voz = [frase_presentacion(res)] + ([frase_remate(remate, res.gano)] if remate else [])
+    partes_voz = partes_anuncio(res, remate)
     contenido = f"📢 {texto}"
     if not res.gano:
         try:

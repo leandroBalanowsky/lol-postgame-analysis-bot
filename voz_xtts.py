@@ -19,6 +19,7 @@ from pathlib import Path
 
 os.environ["COQUI_TOS_AGREED"] = "1"  # licencia del modelo: Coqui Public Model License (uso no comercial)
 
+import librosa
 import numpy as np
 import soundfile as sf
 import torch
@@ -44,7 +45,11 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--texto")
     p.add_argument("--salida", type=Path)
-    p.add_argument("--lote", type=Path, help='JSON con [{"texto": ..., "salida": ...}, ...]')
+    p.add_argument("--lote", type=Path, help='JSON con [{"texto": ..., "salida": ...}, ...]; cada tarea puede '
+                                            'traer también "recortar", "ganancia" y "silencio_final"')
+    p.add_argument("--recortar", action="store_true", help="sacar el silencio del principio y del final")
+    p.add_argument("--ganancia", type=float, default=1.0, help="multiplicar el volumen (ej: 1.3 = más fuerte)")
+    p.add_argument("--silencio-final", type=float, default=SILENCIO_FINAL)
     p.add_argument("--referencia", required=True, type=Path)
     p.add_argument("--temperatura", type=float, default=0.75)
     p.add_argument("--idioma", default="es")
@@ -52,7 +57,8 @@ def main():
     if args.lote:
         tareas = json.loads(args.lote.read_text(encoding="utf-8"))
     elif args.texto and args.salida:
-        tareas = [{"texto": args.texto, "salida": str(args.salida)}]
+        tareas = [{"texto": args.texto, "salida": str(args.salida), "recortar": args.recortar,
+                   "ganancia": args.ganancia, "silencio_final": args.silencio_final}]
     else:
         p.error("hace falta --texto y --salida, o --lote")
 
@@ -65,7 +71,9 @@ def main():
     fallidas = 0
     for i, tarea in enumerate(tareas, 1):
         try:
-            generar(modelo, gpt, speaker, tarea["texto"], Path(tarea["salida"]), args)
+            generar(modelo, gpt, speaker, tarea["texto"], Path(tarea["salida"]), args,
+                    recortar=tarea.get("recortar", False), ganancia=tarea.get("ganancia", 1.0),
+                    silencio_final=tarea.get("silencio_final", SILENCIO_FINAL))
         except Exception as e:
             if len(tareas) == 1:
                 raise
@@ -78,15 +86,23 @@ def main():
         print(f"{fallidas} audios fallaron", file=sys.stderr)
 
 
-def generar(modelo, gpt, speaker, texto: str, salida: Path, args):
+def generar(modelo, gpt, speaker, texto: str, salida: Path, args, recortar: bool = False,
+            ganancia: float = 1.0, silencio_final: float = SILENCIO_FINAL):
     wav = np.asarray(modelo.inference(texto, args.idioma, gpt, speaker, temperature=args.temperatura)["wav"],
                      dtype=np.float32)
+    if recortar:  # para las partes que se unen con otras: las pausas las pone el bot
+        wav, _ = librosa.effects.trim(wav, top_db=35)
+    if ganancia != 1.0:
+        wav = wav * ganancia
+        pico = float(np.abs(wav).max())
+        if pico > 0.98:  # que no sature
+            wav *= 0.98 / pico
     n = min(int(SR * FUNDIDO), len(wav) // 2)
     rampa = np.linspace(0, 1, n, dtype=np.float32)
     wav[:n] *= rampa
     wav[-n:] *= rampa[::-1]
     # El silencio final también hace de pausa cuando se reproduce otra parte a continuación
-    wav = np.concatenate([wav, np.zeros(int(SR * SILENCIO_FINAL), dtype=np.float32)])
+    wav = np.concatenate([wav, np.zeros(int(SR * silencio_final), dtype=np.float32)])
 
     salida.parent.mkdir(parents=True, exist_ok=True)
     temporal = salida.with_suffix(".tmp.wav")
