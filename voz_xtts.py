@@ -88,6 +88,7 @@ def generar(modelo, gpt, speaker, texto: str, salida: Path, args):
     # El silencio final también hace de pausa cuando se reproduce otra parte a continuación
     wav = np.concatenate([wav, np.zeros(int(SR * SILENCIO_FINAL), dtype=np.float32)])
 
+    salida.parent.mkdir(parents=True, exist_ok=True)
     temporal = salida.with_suffix(".tmp.wav")
     sf.write(temporal, wav, SR)
     temporal.replace(salida)  # nunca queda un audio a medio escribir

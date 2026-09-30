@@ -23,13 +23,13 @@ import bot
 from analisis import Jugador, Resultado, TotalesEquipo
 
 
-def presentacion(vinculo: dict | None, campeon: str, gano: bool, posicion: str = "") -> str:
-    """La presentación hablada, igual a la que armaría el bot en un anuncio real."""
+def presentacion(vinculo: dict | None, campeon: str, gano: bool, posicion: str = "") -> "bot.Frase":
+    """La presentación hablada (texto y carpeta), igual a la que armaría el bot en un anuncio real."""
     j = Jugador(puuid=vinculo["puuid"] if vinculo else "-", nombre=vinculo["riot_id"].split("#")[0] if vinculo else "-",
                 campeon=campeon, posicion=posicion, kills=0, deaths=0, assists=0,
                 farm_min=0, dano_min=0, vision_min=0, kp=0)
     vacio = TotalesEquipo(0, 0, 0, 0, 0, 0)
-    return bot.armar_mensaje(Resultado("-", "", 0, 0, 0, gano, [j], vacio, vacio), hablado=True)
+    return bot.frase_presentacion(Resultado("-", "", 0, 0, 0, gano, [j], vacio, vacio))
 
 
 async def campeones_por_vinculo(vinculos: list[dict], mejores: int, todos: bool) -> dict[str, list[str]]:
@@ -142,8 +142,9 @@ def main():
     if not bot.riot.campeones:
         sys.exit("No se pudieron bajar los campeones de Data Dragon (¿sin internet o con el filtro web activo?)")
 
-    # texto -> pista para Whisper al verificar (los nombres propios que se dicen)
-    textos = {r: "" for r in bot.REMATES_PEOR + bot.REMATES_MEJOR}
+    # frase -> pista para Whisper al verificar (los nombres propios que se dicen)
+    textos = {bot.frase_remate(r, gano): "" for gano, remates in ((False, bot.REMATES_PEOR),
+                                                                    (True, bot.REMATES_MEJOR)) for r in remates}
     for vinculo in vinculos:
         nombre = vinculo.get("pronunciacion") or vinculo["riot_id"].split("#")[0]
         for campeon in elegidos.get(vinculo["puuid"], []):
@@ -153,7 +154,8 @@ def main():
     for posicion in list(bot.POSICIONES_RANDOM) + [""]:
         for gano in (False, True):
             textos[presentacion(None, "-", gano, posicion)] = "random, top, jungla, mid, ADC, support."
-    tareas = [{"texto": t, "salida": str(bot.ruta_xtts(t)), "pista": textos[t]} for t in sorted(textos)]
+    tareas = [{"texto": f.texto, "salida": str(bot.ruta_xtts(f)), "pista": pista}
+              for f, pista in sorted(textos.items(), key=lambda x: (x[0].carpeta, x[0].nombre))]
 
     if args.verificar:
         guardadas = [t for t in tareas if Path(t["salida"]).exists()]

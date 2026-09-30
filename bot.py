@@ -6,9 +6,11 @@ import json
 import logging
 import os
 import random
+import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -116,8 +118,9 @@ def sintetizar(texto: str, destino: Path):
 
 async def generar_audio_edge(texto: str) -> Path:
     clave = f"{VOZ}|{VELOCIDAD}|{TONO}|{texto}"
-    ruta = CACHE_DIR / (hashlib.md5(clave.encode()).hexdigest() + ".mp3")
+    ruta = CACHE_DIR / "_edge" / (hashlib.md5(clave.encode()).hexdigest() + ".mp3")
     if not ruta.exists():
+        ruta.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.wait_for(asyncio.to_thread(sintetizar, texto, ruta), timeout=20)
     return ruta
 
@@ -125,11 +128,33 @@ async def generar_audio_edge(texto: str) -> Path:
 xtts_lock = asyncio.Lock()  # una sola generación a la vez: la placa de video no da para dos
 
 
-def ruta_xtts(texto: str) -> Path:
-    """Dónde se guarda el audio XTTS de un texto (cambia si cambia la voz o la temperatura)."""
+@dataclass(frozen=True)
+class Frase:
+    """Un audio a decir: el texto, y la carpeta y el nombre legibles con que se guarda.
+
+    Ej: Frase("El más manco del equipo fue ¡Churlen! con Ahri.", "Churlenscuincle", "Ahri - derrota")
+    se guarda en audios/Churlenscuincle/Ahri - derrota - 3fa2c1.wav
+    """
+    texto: str
+    carpeta: str = "_otros"
+    nombre: str = ""
+
+
+def _nombre_archivo(texto: str) -> str:
+    return re.sub(r'[<>:"/\\|?*]', "", texto).strip()[:60] or "audio"
+
+
+def ruta_xtts(frase: Frase) -> Path:
+    """Dónde se guarda el audio XTTS de una frase.
+
+    El código al final del nombre sale del texto, la voz y la temperatura: si cambia
+    cualquiera de ellos, el audio guardado deja de usarse y se genera uno nuevo.
+    """
     referencia = (BASE_DIR / XTTS_REFERENCIA).resolve()
-    clave = f"xtts|{referencia.name}|{referencia.stat().st_mtime}|{XTTS_TEMPERATURA}|{texto}"
-    return CACHE_DIR / (hashlib.md5(clave.encode()).hexdigest() + ".wav")
+    clave = f"xtts|{referencia.name}|{referencia.stat().st_mtime}|{XTTS_TEMPERATURA}|{frase.texto}"
+    codigo = hashlib.md5(clave.encode()).hexdigest()[:6]
+    return (CACHE_DIR / _nombre_archivo(frase.carpeta)
+            / f"{_nombre_archivo(frase.nombre or frase.texto)} - {codigo}.wav")
 
 
 XTTS_TOPE_SEGUNDOS = 15 * 60  # si XTTS se cuelga, se corta igual: no puede ocupar la placa para siempre
@@ -141,6 +166,7 @@ async def _generar_xtts(texto: str, ruta: Path):
     async with xtts_lock:
         if ruta.exists():  # lo generó otra generación mientras esperaba
             return
+        ruta.parent.mkdir(parents=True, exist_ok=True)
         inicio = time.monotonic()
         proceso = await asyncio.create_subprocess_exec(
             str((BASE_DIR / XTTS_PYTHON).resolve()), "-W", "ignore", str(BASE_DIR / "voz_xtts.py"),
@@ -167,18 +193,18 @@ def _fin_generacion(ruta: Path, tarea: asyncio.Task):
         log.warning("Generación XTTS en segundo plano: %s", tarea.exception())
 
 
-async def generar_audio_xtts(texto: str) -> Path:
-    """Audio XTTS del texto: guardado, o generado esperando como mucho XTTS_TIMEOUT segundos.
+async def generar_audio_xtts(frase: Frase) -> Path:
+    """Audio XTTS de la frase: guardado, o generado esperando como mucho XTTS_TIMEOUT segundos.
 
     Si tarda más, se lanza TimeoutError pero la generación sigue en segundo plano y el audio
     queda guardado para la próxima vez.
     """
-    ruta = ruta_xtts(texto)
+    ruta = ruta_xtts(frase)
     if ruta.exists():
         return ruta
     tarea = xtts_en_curso.get(ruta)
     if tarea is None:  # si ya se está generando (ej: anuncio anterior que tardó), se espera esa
-        tarea = asyncio.create_task(_generar_xtts(texto, ruta))
+        tarea = asyncio.create_task(_generar_xtts(frase.texto, ruta))
         xtts_en_curso[ruta] = tarea
         tarea.add_done_callback(lambda t: _fin_generacion(ruta, t))
     # shield: si se vence la espera, no se cancela la generación
@@ -186,10 +212,11 @@ async def generar_audio_xtts(texto: str) -> Path:
     return ruta
 
 
-async def generar_audio(texto: str) -> Path:
+async def generar_audio(frase: Frase) -> Path:
+    texto = frase.texto
     if VOZ_MOTOR == "xtts":
         try:
-            return await generar_audio_xtts(texto)
+            return await generar_audio_xtts(frase)
         except asyncio.TimeoutError:
             log.warning("XTTS tarda más de %ss: este anuncio sale con edge-tts y el audio se sigue "
                         "generando para la próxima vez", XTTS_TIMEOUT)
@@ -225,7 +252,7 @@ async def conectar(canal: discord.VoiceChannel) -> discord.VoiceClient:
     return vc
 
 
-async def hablar(canal: discord.VoiceChannel, partes: list[str]):
+async def hablar(canal: discord.VoiceChannel, partes: list[Frase]):
     """Entra al canal, dice las partes una tras otra y se va.
 
     Cada parte es un audio aparte (así se reutilizan: el remate sirve para cualquier jugador).
@@ -240,7 +267,7 @@ async def hablar(canal: discord.VoiceChannel, partes: list[str]):
             return
         vc = await conectar(canal)
         try:
-            log.info("Diciendo en #%s: %s", canal.name, " ".join(partes))
+            log.info("Diciendo en #%s: %s", canal.name, " ".join(p.texto for p in partes))
             for ruta in rutas:
                 await reproducir(vc, ruta)
         finally:
@@ -398,6 +425,21 @@ async def pasar_rol_peor(guild: discord.Guild, j: Jugador) -> discord.Member | N
     return miembro
 
 
+def frase_presentacion(res: Resultado) -> Frase:
+    """La presentación hablada, guardada en la carpeta de la persona (o en _random)."""
+    j = res.destacado
+    resultado = "victoria" if res.gano else "derrota"
+    persona = nombre_vinculado(j)  # nombre de invocador real, aunque la voz use la pronunciación
+    if persona:
+        return Frase(armar_mensaje(res, hablado=True), persona, f"{riot.nombre_campeon(j.campeon)} - {resultado}")
+    posicion = POSICIONES_RANDOM.get(j.posicion, "equipo")
+    return Frase(armar_mensaje(res, hablado=True), "_random", f"{posicion} - {resultado}")
+
+
+def frase_remate(remate: str, gano: bool) -> Frase:
+    return Frase(remate, "_remates", f"{'victoria' if gano else 'derrota'} - {remate}")
+
+
 def armar_mensaje(res: Resultado, hablado: bool) -> str:
     """El mensaje del anuncio, sin el remate. hablado=True usa la pronunciación de los nombres."""
     j = res.destacado
@@ -420,7 +462,7 @@ async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.Voic
     remates = REMATES_MEJOR if res.gano else REMATES_PEOR
     remate = random.choice(remates) if remates else ""
     texto = f"{armar_mensaje(res, hablado=False)} {remate}".strip()
-    partes_voz = [armar_mensaje(res, hablado=True)] + ([remate] if remate else [])
+    partes_voz = [frase_presentacion(res)] + ([frase_remate(remate, res.gano)] if remate else [])
     contenido = f"📢 {texto}"
     if not res.gano:
         try:
