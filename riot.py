@@ -91,5 +91,14 @@ class Riot:
         self.campeones = {c["id"]: c["name"] for c in datos.values()}
         log.info("Cargados %d campeones (versión %s)", len(self.campeones), version)
 
+    async def asegurar_campeones(self):
+        """Reintenta bajar los nombres de campeones si no se pudo al arrancar (ej: sin conexión)."""
+        if self.campeones:
+            return
+        try:
+            await self._cargar_campeones()
+        except Exception as e:
+            log.warning("Siguen sin cargarse los nombres de campeones: %s", type(e).__name__)
+
     def nombre_campeon(self, champion_name: str) -> str:
         return self.campeones.get(champion_name, champion_name)

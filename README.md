@@ -87,6 +87,15 @@ Requirements: Python 3.10 or newer (3.12 recommended), a Discord bot token and a
 
 FFmpeg is bundled through `imageio-ffmpeg`, so there is nothing else to install.
 
+### Optional: local voice cloning with XTTS-v2
+
+By default the spoken announcement uses `edge-tts`. With `VOZ_MOTOR=xtts` the bot instead clones a voice from a short reference recording using [XTTS-v2](https://github.com/idiap/coqui-ai-TTS), running locally on the GPU:
+
+- XTTS lives in its own Python environment (`pip install coqui-tts` plus a CUDA build of PyTorch 2.8), so the bot itself stays lightweight. `XTTS_PYTHON` points to that environment's `python.exe` and `XTTS_REFERENCIA` to a 6–15 s clean recording of a single speaker (not included in this repository).
+- For each new sentence the bot runs `voz_xtts.py` as a separate process that loads the model, generates the audio and exits, so the GPU is only used for about 30 seconds after a match. The analysis of the reference voice is computed once and cached next to it. Generated audio is cached like any other announcement.
+- If XTTS fails or takes longer than `XTTS_TIMEOUT_SEGUNDOS`, that announcement falls back to `edge-tts`.
+- The XTTS-v2 model is licensed under the Coqui Public Model License (non-commercial use only).
+
 ### Running it permanently
 
 - **Windows:** `windows/activar-inicio-automatico.bat` registers a scheduled task that starts the bot at logon through `supervisor.py`, which restarts it if it exits. `detener-bot.bat`, `iniciar-bot.bat`, `estado-bot.bat` and `quitar-inicio-automatico.bat` control it.
@@ -99,6 +108,7 @@ FFmpeg is bundled through `imageio-ffmpeg`, so there is nothing else to install.
 | `bot.py` | Discord bot: commands, match polling, announcements (text and voice) |
 | `riot.py` | Minimal Riot API client (Account-V1, Match-V5) and Data Dragon |
 | `analisis.py` | Scoring and best/worst selection |
+| `voz_xtts.py` | Optional XTTS-v2 voice generator, run as a separate process |
 | `supervisor.py` | Restarts the bot if it exits |
 | `windows/`, `deploy/` | Scripts to run it permanently on Windows or Linux |
 

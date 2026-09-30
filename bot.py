@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ RIOT_API_KEY = os.getenv("RIOT_API_KEY")
 CANAL_TEXTO_ID = int(os.getenv("CANAL_TEXTO_ID") or 0)
 # Derrota: se anuncia al peor del equipo. Victoria: al mejor.
 # {jugador} es "Invocador con Campeón" si está vinculado, o "el jugador de Campeón" si no.
+# {jugador_enfasis} es lo mismo con el nombre entre "¡!" ("¡Invocador! con Campeón"), para la voz.
 MENSAJE_PEOR = os.getenv(
     "MENSAJE_PEOR",
     "El peor del equipo fue {jugador}: {kills} kills, {muertes} muertes y {asistencias} asistencias",
@@ -40,6 +42,13 @@ MENSAJE_MEJOR = os.getenv(
 VOZ = os.getenv("VOZ", "es-AR-TomasNeural")
 VELOCIDAD = os.getenv("VELOCIDAD", "+0%")
 TONO = os.getenv("TONO", "+0Hz")
+# Motor de voz: "edge" (edge-tts, en la nube) o "xtts" (XTTS-v2 en la PC, clonando una voz).
+# Con xtts, si falla o tarda demasiado, se usa edge-tts para ese anuncio.
+VOZ_MOTOR = os.getenv("VOZ_MOTOR", "edge").strip().lower()
+XTTS_PYTHON = os.getenv("XTTS_PYTHON", "").strip()  # python.exe del entorno con coqui-tts
+XTTS_REFERENCIA = os.getenv("XTTS_REFERENCIA", "").strip()  # audio de la voz a clonar
+XTTS_TEMPERATURA = os.getenv("XTTS_TEMPERATURA", "0.75").strip()
+XTTS_TIMEOUT = int(os.getenv("XTTS_TIMEOUT_SEGUNDOS") or 180)
 INTERVALO = int(os.getenv("INTERVALO_SEGUNDOS") or 90)  # cada cuánto revisa partidas nuevas
 # Partidas que terminaron hace más que esto no se anuncian (ej: el bot estuvo apagado)
 MAX_ANTIGUEDAD_MIN = int(os.getenv("MAX_ANTIGUEDAD_MIN") or 20)
@@ -100,12 +109,55 @@ def sintetizar(texto: str, destino: Path):
     temporal.replace(destino)
 
 
-async def generar_audio(texto: str) -> Path:
+async def generar_audio_edge(texto: str) -> Path:
     clave = f"{VOZ}|{VELOCIDAD}|{TONO}|{texto}"
     ruta = CACHE_DIR / (hashlib.md5(clave.encode()).hexdigest() + ".mp3")
     if not ruta.exists():
         await asyncio.wait_for(asyncio.to_thread(sintetizar, texto, ruta), timeout=20)
     return ruta
+
+
+xtts_lock = asyncio.Lock()  # una sola generación a la vez: la placa de video no da para dos
+
+
+async def generar_audio_xtts(texto: str) -> Path:
+    """Genera con XTTS en un proceso aparte, que carga el modelo, genera y se cierra."""
+    referencia = (BASE_DIR / XTTS_REFERENCIA).resolve()
+    clave = f"xtts|{referencia.name}|{referencia.stat().st_mtime}|{XTTS_TEMPERATURA}|{texto}"
+    ruta = CACHE_DIR / (hashlib.md5(clave.encode()).hexdigest() + ".wav")
+    if ruta.exists():
+        return ruta
+    async with xtts_lock:
+        if ruta.exists():  # lo generó otro anuncio mientras esperaba
+            return ruta
+        inicio = time.monotonic()
+        proceso = await asyncio.create_subprocess_exec(
+            str((BASE_DIR / XTTS_PYTHON).resolve()), "-W", "ignore", str(BASE_DIR / "voz_xtts.py"),
+            "--texto", texto, "--salida", str(ruta), "--referencia", str(referencia),
+            "--temperatura", XTTS_TEMPERATURA,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # sin ventana de consola
+        )
+        try:
+            _, error = await asyncio.wait_for(proceso.communicate(), timeout=XTTS_TIMEOUT)
+        except asyncio.TimeoutError:
+            proceso.kill()
+            await proceso.wait()
+            raise RuntimeError(f"XTTS tardó más de {XTTS_TIMEOUT}s")
+        if proceso.returncode != 0 or not ruta.exists():
+            ultima = error.decode("utf-8", "replace").strip().splitlines()[-1:] or ["sin detalle"]
+            raise RuntimeError(f"XTTS falló (código {proceso.returncode}): {ultima[0]}")
+        log.info("Audio XTTS generado en %.0fs", time.monotonic() - inicio)
+    return ruta
+
+
+async def generar_audio(texto: str) -> Path:
+    if VOZ_MOTOR == "xtts":
+        try:
+            return await generar_audio_xtts(texto)
+        except Exception as e:
+            log.warning("No se pudo generar con XTTS (%s); se usa edge-tts para este anuncio", e)
+    return await generar_audio_edge(texto)
 
 
 async def reproducir(vc: discord.VoiceClient, ruta: Path):
@@ -142,6 +194,8 @@ async def hablar(canal: discord.VoiceChannel, texto: str):
         if not any(not m.bot for m in canal.members):
             return
         ruta = await generar_audio(texto)
+        if not any(not m.bot for m in canal.members):  # se fueron mientras se generaba el audio
+            return
         vc = await conectar(canal)
         try:
             log.info("Diciendo en #%s: %s", canal.name, texto)
@@ -161,10 +215,16 @@ def nombre_vinculado(j: Jugador) -> str | None:
     return j.nombre if vinculo_de_puuid(j.puuid) else None
 
 
-def jugador_texto(j: Jugador) -> str:
-    """Cómo se lo nombra en voz y texto: "Invocador con Campeón" o "el jugador de Campeón"."""
+def jugador_texto(j: Jugador, enfasis: bool = False) -> str:
+    """Cómo se lo nombra en voz y texto: "Invocador con Campeón" o "el jugador de Campeón".
+
+    Con énfasis, el nombre va entre signos de admiración ("¡Invocador! con Campeón"), que la
+    voz lee con más fuerza.
+    """
     campeon = riot.nombre_campeon(j.campeon)
     nombre = nombre_vinculado(j)
+    if enfasis:
+        return f"¡{nombre}! con {campeon}" if nombre else f"¡el jugador de {campeon}!"
     return f"{nombre} con {campeon}" if nombre else f"el jugador de {campeon}"
 
 
@@ -279,9 +339,11 @@ async def pasar_rol_peor(guild: discord.Guild, j: Jugador) -> discord.Member | N
 
 async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.VoiceChannel | None,
                    canal_texto: discord.abc.Messageable | None):
+    await riot.asegurar_campeones()
     j = res.destacado
     texto = (MENSAJE_MEJOR if res.gano else MENSAJE_PEOR).format(
         jugador=jugador_texto(j),
+        jugador_enfasis=jugador_texto(j, enfasis=True),
         nombre=nombre_vinculado(j) or f"el jugador de {riot.nombre_campeon(j.campeon)}",
         campeon=riot.nombre_campeon(j.campeon),
         kills=j.kills, muertes=j.deaths, asistencias=j.assists,
@@ -520,4 +582,13 @@ if __name__ == "__main__":
         raise SystemExit("Falta DISCORD_TOKEN en el archivo .env")
     if not RIOT_API_KEY:
         raise SystemExit("Falta RIOT_API_KEY en el archivo .env")
+    if VOZ_MOTOR == "xtts":
+        faltan = [n for n, v in (("XTTS_PYTHON", XTTS_PYTHON), ("XTTS_REFERENCIA", XTTS_REFERENCIA))
+                  if not v or not (BASE_DIR / v).is_file()]
+        if faltan:
+            log.warning("VOZ_MOTOR=xtts pero %s no apunta a un archivo existente: se usa edge-tts",
+                        " y ".join(faltan))
+            VOZ_MOTOR = "edge"
+        else:
+            log.info("Voz: XTTS con %s", Path(XTTS_REFERENCIA).name)
     client.run(TOKEN, log_handler=None)
