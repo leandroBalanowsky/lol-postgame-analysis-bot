@@ -73,7 +73,8 @@ def main():
         try:
             generar(modelo, gpt, speaker, tarea["texto"], Path(tarea["salida"]), args,
                     recortar=tarea.get("recortar", False), ganancia=tarea.get("ganancia", 1.0),
-                    silencio_final=tarea.get("silencio_final", SILENCIO_FINAL))
+                    silencio_final=tarea.get("silencio_final", SILENCIO_FINAL),
+                    temperatura=float(tarea["temperatura"]) if tarea.get("temperatura") else None)
         except Exception as e:
             if len(tareas) == 1:
                 raise
@@ -87,9 +88,9 @@ def main():
 
 
 def generar(modelo, gpt, speaker, texto: str, salida: Path, args, recortar: bool = False,
-            ganancia: float = 1.0, silencio_final: float = SILENCIO_FINAL):
-    wav = np.asarray(modelo.inference(texto, args.idioma, gpt, speaker, temperature=args.temperatura)["wav"],
-                     dtype=np.float32)
+            ganancia: float = 1.0, silencio_final: float = SILENCIO_FINAL, temperatura: float | None = None):
+    wav = np.asarray(modelo.inference(texto, args.idioma, gpt, speaker,
+                                      temperature=temperatura or args.temperatura)["wav"], dtype=np.float32)
     if recortar:  # para las partes que se unen con otras: las pausas las pone el bot
         wav, _ = librosa.effects.trim(wav, top_db=35)
     if ganancia != 1.0:

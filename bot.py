@@ -66,6 +66,7 @@ PAUSA_ANUNCIO = float(os.getenv("PAUSA_ANUNCIO") or 0.8)  # entre "…del equipo
 PAUSA_PARTES = float(os.getenv("PAUSA_PARTES") or 0.15)  # entre el nombre y "con Campeón"
 PAUSA_REMATE = float(os.getenv("PAUSA_REMATE") or 0.5)  # antes del remate
 NOMBRE_GANANCIA = float(os.getenv("NOMBRE_GANANCIA") or 1.3)  # volumen del nombre respecto del resto
+INICIO_TEMPERATURA = os.getenv("INICIO_TEMPERATURA", "0.85").strip()  # más expresividad en "El carreador…fue"
 NOMBRE_SUFIJO = os.getenv("NOMBRE_SUFIJO", "").strip()  # se agrega al nombre en la voz: "kun" -> "¡¡Adroco kun!!"
 INTERVALO = int(os.getenv("INTERVALO_SEGUNDOS") or 90)  # cada cuánto revisa partidas nuevas
 # Partidas que terminaron hace más que esto no se anuncian (ej: el bot estuvo apagado)
@@ -151,6 +152,7 @@ class Frase:
     nombre: str = ""
     recortar: bool = False  # sin silencio al principio ni al final (para unirla con otras partes)
     ganancia: float = 1.0  # volumen (ej: 1.3 para el nombre, con más énfasis)
+    temperatura: str | None = None  # si no se indica, XTTS_TEMPERATURA (más alta = más expresiva)
 
 
 def _nombre_archivo(texto: str) -> str:
@@ -167,6 +169,8 @@ def ruta_xtts(frase: Frase) -> Path:
     clave = f"xtts|{referencia.name}|{referencia.stat().st_mtime}|{XTTS_TEMPERATURA}|{frase.texto}"
     if frase.recortar or frase.ganancia != 1.0:
         clave += f"|recortar={frase.recortar}|ganancia={frase.ganancia}"
+    if frase.temperatura:
+        clave += f"|temperatura={frase.temperatura}"
     codigo = hashlib.md5(clave.encode()).hexdigest()[:6]
     carpeta = CACHE_DIR.joinpath(*(_nombre_archivo(c) for c in frase.carpeta.split("/")))
     return carpeta / f"{_nombre_archivo(frase.nombre or frase.texto)} - {codigo}.wav"
@@ -188,7 +192,8 @@ async def _generar_xtts(frase: Frase, ruta: Path):
         proceso = await asyncio.create_subprocess_exec(
             str((BASE_DIR / XTTS_PYTHON).resolve()), "-W", "ignore", str(BASE_DIR / "voz_xtts.py"),
             "--texto", frase.texto, "--salida", str(ruta),
-            "--referencia", str((BASE_DIR / XTTS_REFERENCIA).resolve()), "--temperatura", XTTS_TEMPERATURA, *opciones,
+            "--referencia", str((BASE_DIR / XTTS_REFERENCIA).resolve()),
+            "--temperatura", frase.temperatura or XTTS_TEMPERATURA, *opciones,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # sin ventana de consola
         )
@@ -513,7 +518,9 @@ def inicio_del_mensaje(gano: bool) -> str | None:
 
 
 def frase_inicio(gano: bool) -> Frase:
-    return Frase(inicio_del_mensaje(gano), "_partes/inicios", "victoria" if gano else "derrota", recortar=True)
+    """El inicio, dicho con efusividad: entre signos de admiración y con más expresividad."""
+    return Frase(f"¡{inicio_del_mensaje(gano)}!", "_partes/inicios", "victoria" if gano else "derrota",
+                 recortar=True, temperatura=INICIO_TEMPERATURA)
 
 
 def frase_nombre(j: Jugador) -> Frase:

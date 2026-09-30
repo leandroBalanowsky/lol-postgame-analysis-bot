@@ -181,7 +181,8 @@ def main():
             for gano in (False, True):
                 textos[presentacion(None, "-", gano, posicion)] = "random, top, jungla, mid, ADC, support."
     tareas = [{"texto": f.texto, "salida": str(bot.ruta_xtts(f)), "pista": pista, "recortar": f.recortar,
-               "ganancia": f.ganancia, "silencio_final": 0 if f.recortar else 0.5}
+               "ganancia": f.ganancia, "silencio_final": 0 if f.recortar else 0.5,
+               "temperatura": f.temperatura}
               for f, pista in sorted(textos.items(), key=lambda x: (x[0].carpeta, x[0].nombre))]
 
     if args.verificar:
