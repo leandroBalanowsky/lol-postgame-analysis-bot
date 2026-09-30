@@ -67,6 +67,7 @@ PAUSA_PARTES = float(os.getenv("PAUSA_PARTES") or 0.15)  # entre el nombre y "co
 PAUSA_REMATE = float(os.getenv("PAUSA_REMATE") or 0.5)  # antes del remate
 NOMBRE_GANANCIA = float(os.getenv("NOMBRE_GANANCIA") or 1.3)  # volumen del nombre respecto del resto
 INICIO_TEMPERATURA = os.getenv("INICIO_TEMPERATURA", "0.85").strip()  # más expresividad en "El carreador…fue"
+REMATE_TEMPERATURA = os.getenv("REMATE_TEMPERATURA", "0.85").strip()  # y en el remate
 NOMBRE_SUFIJO = os.getenv("NOMBRE_SUFIJO", "").strip()  # se agrega al nombre en la voz: "kun" -> "¡¡Adroco kun!!"
 INTERVALO = int(os.getenv("INTERVALO_SEGUNDOS") or 90)  # cada cuánto revisa partidas nuevas
 # Partidas que terminaron hace más que esto no se anuncian (ej: el bot estuvo apagado)
@@ -503,7 +504,9 @@ def frase_presentacion(res: Resultado) -> Frase:
 
 
 def frase_remate(remate: str, gano: bool) -> Frase:
-    return Frase(remate, "_remates", f"{'victoria' if gano else 'derrota'} - {remate}")
+    """El remate, con más expresividad que el resto (REMATE_TEMPERATURA)."""
+    return Frase(remate, "_remates", f"{'victoria' if gano else 'derrota'} - {remate}",
+                 temperatura=REMATE_TEMPERATURA)
 
 
 def inicio_del_mensaje(gano: bool) -> str | None:
