@@ -399,8 +399,8 @@ def _miles(n: float) -> str:
 
 
 def _linea_equipo(t: TotalesEquipo) -> str:
-    return (f"{t.kills} kills · {_miles(t.oro)} oro · 🗼 Torres {t.torres} · 🐉 Dragones {t.dragones}"
-            f" · 🟣 Larvas {t.larvas} · 👿 Barones {t.barones}")
+    return (f"{t.kills} kills · {_miles(t.oro)} oro · 🗼 Torres {t.torres} · 🏛️ Inhibidores {t.inhibidores}"
+            f" · 🐉 Dragones {t.dragones} · 🟣 Larvas {t.larvas} · 🦀 Heraldo {t.heraldos} · 👿 Barones {t.barones}")
 
 
 def _ficha(j: Jugador) -> str:

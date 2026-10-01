@@ -76,6 +76,8 @@ class TotalesEquipo:
     dragones: int
     barones: int
     larvas: int
+    heraldos: int = 0
+    inhibidores: int = 0
 
 
 @dataclass
@@ -281,4 +283,6 @@ def _totales(info: dict, participantes: list[dict], team_id: int) -> TotalesEqui
         dragones=cant("dragon"),
         barones=cant("baron"),
         larvas=cant("horde"),
+        heraldos=cant("riftHerald"),
+        inhibidores=cant("inhibitor"),
     )
