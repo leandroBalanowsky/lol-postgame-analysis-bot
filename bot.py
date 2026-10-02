@@ -225,14 +225,39 @@ async def generar_audio_xtts(frase: Frase) -> Path:
     ruta = ruta_xtts(frase)
     if ruta.exists():
         return ruta
-    tarea = xtts_en_curso.get(ruta)
-    if tarea is None:  # si ya se está generando (ej: anuncio anterior que tardó), se espera esa
-        tarea = asyncio.create_task(_generar_xtts(frase, ruta))
-        xtts_en_curso[ruta] = tarea
-        tarea.add_done_callback(lambda t: _fin_generacion(ruta, t))
+    tarea = lanzar_generacion_xtts(frase)
     # shield: si se vence la espera, no se cancela la generación
     await asyncio.wait_for(asyncio.shield(tarea), timeout=XTTS_TIMEOUT)
     return ruta
+
+
+def lanzar_generacion_xtts(frase: Frase) -> asyncio.Task | None:
+    """Empieza a generar el audio en segundo plano, sin esperarlo.
+
+    Devuelve la tarea (o la que ya estaba en marcha para ese audio), o None si ya existe.
+    """
+    ruta = ruta_xtts(frase)
+    if ruta.exists():
+        return None
+    tarea = xtts_en_curso.get(ruta)
+    if tarea is None:
+        tarea = asyncio.create_task(_generar_xtts(frase, ruta))
+        xtts_en_curso[ruta] = tarea
+        tarea.add_done_callback(lambda t: _fin_generacion(ruta, t))
+    return tarea
+
+
+def preparar_nombre(vinculo: dict):
+    """Genera de antemano el audio del nombre de un vinculado (modo partes), si todavía no existe.
+
+    Así, cuando sale destacado en una partida, el anuncio no tiene que esperar a XTTS.
+    """
+    if VOZ_MOTOR != "xtts" or VOZ_MODO != "partes":
+        return
+    j = Jugador(puuid=vinculo["puuid"], nombre=vinculo["riot_id"].split("#")[0], campeon="-", posicion="",
+                kills=0, deaths=0, assists=0, farm_min=0, dano_min=0, vision_min=0, kp=0)
+    if lanzar_generacion_xtts(frase_nombre(j)):
+        log.info("Generando en segundo plano el audio del nombre de %s", vinculo["riot_id"])
 
 
 async def generar_audio(frase: Frase) -> Path:
@@ -726,6 +751,7 @@ async def cmd_vincular(interaction: discord.Interaction, riot_id: str, usuario: 
         vinculo["pronunciacion"] = pronunciacion.strip()
     datos["vinculos"][str(usuario.id)] = vinculo
     guardar_datos()
+    preparar_nombre(vinculo)  # su nombre queda listo para el primer anuncio
     extra = f" La voz lo va a decir como **{vinculo['pronunciacion']}**." if pronunciacion else ""
     await interaction.followup.send(
         f"✅ {usuario.mention} quedó vinculado a **{cuenta['gameName']}#{cuenta['tagLine']}**.{extra}")
@@ -810,6 +836,8 @@ async def on_ready():
         sincronizado = True
     if not revisar_partidas.is_running():
         revisar_partidas.start()
+    for vinculo in datos["vinculos"].values():  # nombres que falten (ej: pronunciación cambiada a mano)
+        preparar_nombre(vinculo)
 
 
 @client.event
