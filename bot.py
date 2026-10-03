@@ -12,7 +12,7 @@ import sys
 import time
 import wave
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -75,6 +75,8 @@ MAX_ANTIGUEDAD_MIN = int(os.getenv("MAX_ANTIGUEDAD_MIN") or 20)
 # Rol para el peor vinculado de la última derrota; lo conserva hasta que otro vinculado salga peor.
 # Vacío = sin rol. Si no existe en el servidor, el bot lo crea (necesita el permiso Gestionar roles).
 ROL_PEOR = os.getenv("ROL_PEOR", "El más manco").strip()
+# Hora (de Argentina) a la que los lunes se publica el veredicto de la semana anterior
+VEREDICTO_HORA = int(os.getenv("VEREDICTO_HORA") or 10)
 
 BASE_DIR = Path(__file__).parent
 DATOS = BASE_DIR / "datos.json"
@@ -596,6 +598,7 @@ def armar_mensaje(res: Resultado, hablado: bool) -> str:
 async def anunciar(res: Resultado, guild: discord.Guild, canal_voz: discord.VoiceChannel | None,
                    canal_texto: discord.abc.Messageable | None):
     await riot.asegurar_campeones()
+    registrar_resultado(res)
     j = res.destacado
     remates = REMATES_MEJOR if res.gano else REMATES_PEOR
     remate = random.choice(remates) if remates else ""
@@ -635,6 +638,102 @@ def clave_anuncio(res: Resultado) -> str:
 def marcar_anunciada(clave: str):
     datos["anunciadas"] = (datos["anunciadas"] + [clave])[-200:]
     guardar_datos()
+
+
+def registrar_resultado(res: Resultado):
+    """Guarda el resultado de un anuncio para el veredicto semanal (solo los vinculados del equipo)."""
+    clave = clave_anuncio(res)
+    historial = datos.setdefault("historial", [])
+    if any(h["clave"] == clave for h in historial):  # ej: /analizar de una partida ya anunciada
+        return
+    jugadores = [{"discord": did, "nombre": j.nombre, "puntaje": round(j.puntaje, 1), "destacado": j is res.destacado}
+                 for j in res.equipo if (did := vinculo_de_puuid(j.puuid))]
+    historial.append({"clave": clave, "fin": res.fin or int(time.time() * 1000), "gano": res.gano,
+                      "jugadores": jugadores})
+    datos["historial"] = historial[-2000:]
+    guardar_datos()
+
+
+# ---------------------------------------------------------------- veredicto semanal
+
+ARGENTINA = timezone(timedelta(hours=-3))  # sin horario de verano
+
+
+def semana_anterior(ahora: datetime) -> tuple[datetime, datetime]:
+    """Lunes 00:00 de la semana pasada y lunes 00:00 de esta semana (hora de Argentina)."""
+    lunes = (ahora - timedelta(days=ahora.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    return lunes - timedelta(days=7), lunes
+
+
+def armar_veredicto(inicio: datetime, fin: datetime) -> discord.Embed | None:
+    """El más manco y el carreador de la semana: quien más veces salió destacado en derrotas y en victorias.
+
+    Empate: decide el puntaje promedio en esas partidas (el más bajo para el manco, el más alto para
+    el carreador). Devuelve None si en la semana no hubo destacados vinculados.
+    """
+    desde, hasta = inicio.timestamp() * 1000, fin.timestamp() * 1000
+    titulos = {False: {}, True: {}}  # gano -> discord_id -> [puntajes]
+    nombres, partidas = {}, 0
+    for h in datos.get("historial", []):
+        if not desde <= h["fin"] < hasta:
+            continue
+        partidas += 1
+        for j in h["jugadores"]:
+            nombres[j["discord"]] = j["nombre"]
+            if j["destacado"]:
+                titulos[h["gano"]].setdefault(j["discord"], []).append(j["puntaje"])
+    if not titulos[False] and not titulos[True]:
+        return None
+
+    def ganador(gano: bool) -> str:
+        if not titulos[gano]:
+            return "Nadie esta semana"
+        orden = sorted(titulos[gano].items(),
+                       key=lambda x: (-len(x[1]), (-1 if gano else 1) * sum(x[1]) / len(x[1])))
+        did, puntajes = orden[0]
+        veces = len(puntajes)
+        detalle = f"{veces} {'vez' if veces == 1 else 'veces'} · promedio {sum(puntajes) / veces:.0f} pts"
+        siguen = ", ".join(f"{nombres[d]} ({len(p)})" for d, p in orden[1:3])
+        return f"<@{did}> (**{nombres[did]}**) — {detalle}" + (f"\nLe siguen: {siguen}" if siguen else "")
+
+    embed = discord.Embed(
+        title=f"⚖️ Veredicto semanal de la Corte · {inicio:%d/%m} al {fin - timedelta(days=1):%d/%m}",
+        color=discord.Color.gold(),
+    )
+    embed.add_field(name="💀 El más manco de la semana", value=ganador(False), inline=False)
+    embed.add_field(name="🏆 El carreador de la semana", value=ganador(True), inline=False)
+    embed.set_footer(text=f"{partidas} partidas anunciadas en la semana · cuenta las veces que salió destacado")
+    return embed
+
+
+@tasks.loop(minutes=30)
+async def veredicto_semanal():
+    """Los lunes desde VEREDICTO_HORA publica el veredicto de la semana anterior (una sola vez).
+
+    Si el bot estuvo apagado a esa hora, lo publica apenas vuelve.
+    """
+    ahora = datetime.now(ARGENTINA)
+    inicio, fin = semana_anterior(ahora)
+    semana = f"{inicio:%Y-%m-%d}"
+    if ahora < fin + timedelta(hours=VEREDICTO_HORA) or datos.get("ultimo_veredicto") == semana:
+        return
+    canal = client.get_channel(CANAL_TEXTO_ID) if CANAL_TEXTO_ID else None
+    if canal is None:
+        log.warning("Veredicto semanal: falta CANAL_TEXTO_ID o el bot no ve ese canal")
+        return
+    embed = armar_veredicto(inicio, fin)
+    if embed:
+        await canal.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        log.info("Veredicto semanal publicado (semana del %s)", semana)
+    else:
+        log.info("Veredicto semanal: sin destacados vinculados en la semana del %s, no se publica", semana)
+    datos["ultimo_veredicto"] = semana
+    guardar_datos()
+
+
+@veredicto_semanal.before_loop
+async def antes_del_veredicto():
+    await client.wait_until_ready()
 
 
 # ---------------------------------------------------------------- revisión periódica
@@ -836,6 +935,8 @@ async def on_ready():
         sincronizado = True
     if not revisar_partidas.is_running():
         revisar_partidas.start()
+    if not veredicto_semanal.is_running():
+        veredicto_semanal.start()
     for vinculo in datos["vinculos"].values():  # nombres que falten (ej: pronunciación cambiada a mano)
         preparar_nombre(vinculo)
 

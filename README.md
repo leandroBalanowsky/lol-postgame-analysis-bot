@@ -9,6 +9,8 @@ When a linked player who is in one of our Discord voice channels finishes a matc
 
 The recap is posted as a text message with a per-player breakdown and is also read aloud in the voice channel with text-to-speech. The bot's messages and commands are in Spanish.
 
+Every Monday at `VEREDICTO_HORA` (Argentina time) the bot posts a weekly verdict in the results channel: the opted-in player who was named worst most often in the previous week and the one named best most often (ties broken by average score). It only counts matches the bot announced, and only opted-in players.
+
 After a loss, if the lowest-scoring player is an opted-in member, they get a Discord role (by default "El más manco") until another opted-in member scores lowest in a later loss. Players who haven't opted in never get the role.
 
 ## Riot API usage
@@ -30,7 +32,7 @@ After a loss, if the lowest-scoring player is an opted-in member, they get a Dis
 
 - Players opt in explicitly with `/vincular Name#TAG` (link) and can remove their data at any time with `/desvincular` (unlink).
 - **Only opted-in players are named**, using their summoner name. Every other participant of the match (teammates or opponents outside the group) is referred to only by their position, for example "el random de top" ("the random top laner"). Their Riot IDs and PUUIDs are never shown, logged or stored.
-- The only stored data (`datos.json`, local) is the link between a Discord user ID and the player's Riot ID/PUUID (plus an optional pronunciation hint for the spoken announcement), the ID of the last processed match, a list of already announced match IDs (to avoid duplicates) and, per Discord server, which linked member currently holds the "worst player" role. Match data is not stored or shared.
+- The only stored data (`datos.json`, local) is the link between a Discord user ID and the player's Riot ID/PUUID (plus an optional pronunciation hint for the spoken announcement), the ID of the last processed match, a list of already announced match IDs (to avoid duplicates), the scores of opted-in players in announced matches (for the weekly verdict) and, per Discord server, which linked member currently holds the "worst player" role. Match data is not stored or shared.
 - The API key is kept in a local `.env` file that is never committed or shared.
 
 ## How the score works
