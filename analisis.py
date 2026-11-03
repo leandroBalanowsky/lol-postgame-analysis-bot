@@ -50,6 +50,7 @@ class Jugador:
     oro15_diff: float | None = None  # oro al minuto 15 menos el del rival de línea
     puntaje: float = 0.0
     notas: dict = field(default_factory=dict)  # nota (0 a 1) de cada estadística usada
+    maximos: dict = field(default_factory=dict)  # puntos que vale cada estadística (suman 100)
 
     @property
     def kda(self) -> float:
@@ -252,6 +253,7 @@ def analizar(partida: dict, puuid: str, timeline: dict | None = None) -> Resulta
         usados = {m: peso for m, peso in pesos.items() if m in notas}
         total = sum(usados.values())
         j.notas = {m: notas[m] for m in usados}
+        j.maximos = {m: 100 * peso / total for m, peso in usados.items()}
         j.puntaje = 100 * sum(peso * notas[m] for m, peso in usados.items()) / total
 
     equipo.sort(key=lambda j: j.puntaje, reverse=True)

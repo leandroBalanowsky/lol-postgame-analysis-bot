@@ -439,6 +439,10 @@ def _ficha(j: Jugador) -> str:
     ]
     if j.oro15_diff is not None:
         lineas[-1] += f" · 📈 {j.oro15_diff:+,.0f} oro @15".replace(",", ".")
+    # Desglose: puntos obtenidos / puntos que vale cada estadística para su rol (suman el puntaje)
+    desglose = sorted(j.maximos.items(), key=lambda x: -x[1])
+    lineas.append("📊 " + " · ".join(f"{NOMBRES_NOTAS.get(m, m)} {j.notas[m] * maximo:.0f}/{maximo:.0f}"
+                                     for m, maximo in desglose))
     return "\n".join(lineas)
 
 
@@ -470,7 +474,9 @@ def armar_embed(res: Resultado) -> discord.Embed:
     d = res.destacado
     titulo = "el carreador" if res.gano else "el más manco"
     embed.add_field(name=f"🔎 Por qué {jugador_texto(d)} es {titulo}", value=_por_que(d), inline=False)
-    embed.set_footer(text=f"{res.match_id} · puntaje por rol: contra su equipo y su rival de línea")
+    embed.set_footer(text=f"{res.match_id} · 📊 = puntos obtenidos/posibles por estadística según el rol. "
+                          "KDA, participación, daño, farm y visión se comparan con el mejor del equipo; "
+                          "oro @15, daño a torres, aguante, objetivos y utilidad, con el rival de línea")
     return embed
 
 

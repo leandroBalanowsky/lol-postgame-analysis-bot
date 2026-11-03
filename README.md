@@ -49,6 +49,8 @@ Each player gets a score from 0 to 100, computed from two kinds of stats:
 
 KDA is `(kills + assists) / max(1, deaths)`, so assists count as much as kills.
 
+The summary shows each player's breakdown: points earned out of the points each stat is worth for their role (e.g. `KDA 9/30 · daño 16/25 · …`), which add up to their score.
+
 ### Weights by role
 
 | Role | KDA | KP | Damage | CS | Vision | Gold @15 | Buildings | Toughness | Objectives | Utility |
