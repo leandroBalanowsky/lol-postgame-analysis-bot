@@ -412,7 +412,7 @@ def jugador_texto(j: Jugador, enfasis: bool = False, hablado: bool = False) -> s
 
 COLAS = {
     420: "Clasificatoria Solo/Dúo", 440: "Clasificatoria Flexible", 400: "Normal (reclutamiento)",
-    430: "Normal (a ciegas)", 490: "Partida rápida", 450: "ARAM", 900: "URF", 1900: "URF",
+    430: "Normal (a ciegas)", 480: "Partida rápida", 490: "Partida rápida", 450: "ARAM", 900: "URF", 1900: "URF",
 }
 NOMBRES_NOTAS = {
     "kda": "KDA", "kp": "participación", "dano": "daño", "farm": "farm", "vision": "visión",
