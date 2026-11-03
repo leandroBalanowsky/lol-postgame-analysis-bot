@@ -71,6 +71,7 @@ If a stat cannot be computed (a match shorter than 15 minutes, no lane opponent,
 | `/vincular riot_id [usuario] [pronunciacion]` | Link a Riot ID (`Name#TAG`) to yourself or to another member; optionally set how the voice should say the name |
 | `/desvincular [usuario]` | Remove the link and its stored data |
 | `/vinculados` | List the linked players in the server |
+| `/promedio [usuario]` | Average score this month in announced matches, with wins and times named best or worst |
 | `/analizar [usuario]` | Analyze someone's last match on demand |
 
 ## Setup

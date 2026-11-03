@@ -942,6 +942,41 @@ async def cmd_desvincular(interaction: discord.Interaction, usuario: discord.Mem
         await interaction.response.send_message(f"{usuario.mention} no tenía una cuenta vinculada.", ephemeral=True)
 
 
+def resumen_desde(did: str, desde: datetime) -> tuple[list, int, int, int]:
+    """Puntajes de un vinculado en las partidas anunciadas desde una fecha, y victorias / mancos / carreos."""
+    puntajes, victorias, mancos, carreos = [], 0, 0, 0
+    for h in datos.get("historial", []):
+        if h["fin"] < desde.timestamp() * 1000:
+            continue
+        for j in h["jugadores"]:
+            if j["discord"] == did:
+                puntajes.append(j["puntaje"])
+                victorias += h["gano"]
+                mancos += j["destacado"] and not h["gano"]
+                carreos += j["destacado"] and h["gano"]
+    return puntajes, victorias, mancos, carreos
+
+
+@tree.command(name="promedio", description="Tu puntaje promedio del mes en las partidas que anunció la Corte")
+@app_commands.describe(usuario="De quién (por defecto, vos)")
+async def cmd_promedio(interaction: discord.Interaction, usuario: discord.Member | None = None):
+    usuario = usuario or interaction.user
+    inicio = datetime.now(ARGENTINA).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    mes = f"{MESES[inicio.month - 1]} {inicio.year}"
+    puntajes, victorias, mancos, carreos = resumen_desde(str(usuario.id), inicio)
+    if not puntajes:
+        await interaction.response.send_message(f"{usuario.mention} no tiene partidas anunciadas en {mes}.",
+                                                allowed_mentions=discord.AllowedMentions.none())
+        return
+    n = len(puntajes)
+    await interaction.response.send_message(
+        f"📊 **{usuario.display_name}** en {mes}: promedio **{sum(puntajes) / n:.0f} pts** en {n} "
+        f"{'partida' if n == 1 else 'partidas'} ({victorias} ganadas)\n"
+        f"🏆 Carreador {carreos} {'vez' if carreos == 1 else 'veces'} · "
+        f"💀 Más manco {mancos} {'vez' if mancos == 1 else 'veces'}",
+        allowed_mentions=discord.AllowedMentions.none())
+
+
 @tree.command(name="vinculados", description="Lista las cuentas de LoL vinculadas en este servidor")
 async def cmd_vinculados(interaction: discord.Interaction):
     lineas = [
