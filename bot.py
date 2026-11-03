@@ -474,10 +474,23 @@ def armar_embed(res: Resultado) -> discord.Embed:
     d = res.destacado
     titulo = "el carreador" if res.gano else "el más manco"
     embed.add_field(name=f"🔎 Por qué {jugador_texto(d)} es {titulo}", value=_por_que(d), inline=False)
-    embed.set_footer(text=f"{res.match_id} · 📊 = puntos obtenidos/posibles por estadística según el rol. "
-                          "KDA, participación, daño, farm y visión se comparan con el mejor del equipo; "
-                          "oro @15, daño a torres, aguante, objetivos y utilidad, con el rival de línea")
+    embed.add_field(name="📖 Qué se evalúa", value=LEYENDA, inline=False)
+    embed.set_footer(text=f"{res.match_id} · 📊 = puntos obtenidos/posibles por estadística según el rol")
     return embed
+
+
+LEYENDA = """\
+**KDA:** (kills + asistencias) ÷ muertes
+**Participación:** en qué parte de las kills del equipo participó
+**Daño:** daño a campeones por minuto
+**Farm:** súbditos y monstruos por minuto
+**Visión:** puntaje de visión, wards destruidos y de control, por minuto
+**Oro @15:** diferencia de oro con el rival de línea al minuto 15
+**Daño a torres:** daño a estructuras
+**Aguante:** daño recibido + daño mitigado
+**Objetivos:** dragones, Barón, Heraldo y larvas en los que participó
+**Utilidad:** curación y escudos a aliados + tiempo de control (stuns, etc.)
+*KDA, participación, daño, farm y visión se comparan con el mejor del equipo; el resto, con el rival de línea.*"""
 
 
 async def pasar_rol_peor(guild: discord.Guild, j: Jugador) -> discord.Member | None:
