@@ -9,7 +9,7 @@ When a linked player who is in one of our Discord voice channels finishes a matc
 
 The recap is posted as a text message with a per-player breakdown and is also read aloud in the voice channel with text-to-speech. The bot's messages and commands are in Spanish.
 
-Every Monday at `VEREDICTO_HORA` (Argentina time) the bot posts a weekly verdict in the results channel: the opted-in player who was named worst most often in the previous week and the one named best most often (ties broken by average score). It only counts matches the bot announced, and only opted-in players. On the 1st of each month, at the same hour, it also posts the top 5 players named worst most often in the previous month.
+Every Monday at `VEREDICTO_HORA` (Argentina time) the bot posts a weekly verdict in the results channel: the opted-in player who was named worst most often in the previous week and the one named best most often (ties broken by average score). It only counts matches the bot announced, and only opted-in players. On the 1st of each month, at the same hour, it also posts the top 5 players named worst most often, and the top 5 named best most often, in the previous month.
 
 After a loss, if the lowest-scoring player is an opted-in member, they get a Discord role (by default "El más manco") until another opted-in member scores lowest in a later loss. Players who haven't opted in never get the role.
 

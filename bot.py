@@ -751,18 +751,21 @@ def mes_anterior(ahora: datetime) -> tuple[datetime, datetime]:
     return (este_mes - timedelta(days=1)).replace(day=1), este_mes
 
 
-def armar_ranking_mensual(inicio: datetime, fin: datetime) -> discord.Embed | None:
-    """Los 5 más mancos del mes: quienes más veces salieron "el más manco" en derrotas."""
+def armar_ranking_mensual(inicio: datetime, fin: datetime, gano: bool) -> discord.Embed | None:
+    """Top 5 del mes: los que más veces salieron "el más manco" (gano=False) o "el carreador" (gano=True)."""
     titulos, nombres, partidas = titulos_entre(inicio, fin)
-    if not titulos[False]:
+    if not titulos[gano]:
         return None
     medallas = ["🥇", "🥈", "🥉", "4.", "5."]
     lineas = [f"{medalla} <@{did}> (**{nombres[did]}**) — {_veces(puntajes)}"
-              for medalla, (did, puntajes) in zip(medallas, ordenar(titulos[False], gano=False))]
-    embed = discord.Embed(title=f"💀 Ranking de los más mancos · {MESES[inicio.month - 1]} {inicio.year}",
-                          description="\n".join(lineas), color=discord.Color.dark_red())
-    embed.set_footer(text=f"{partidas} partidas anunciadas en el mes · cuenta las veces que salió el más manco "
-                          "(empate: peor puntaje promedio)")
+              for medalla, (did, puntajes) in zip(medallas, ordenar(titulos[gano], gano))]
+    titulo, color, criterio = (("🏆 Ranking de los carreadores", discord.Color.gold(), "el carreador (empate: mejor")
+                               if gano else
+                               ("💀 Ranking de los más mancos", discord.Color.dark_red(), "el más manco (empate: peor"))
+    embed = discord.Embed(title=f"{titulo} · {MESES[inicio.month - 1]} {inicio.year}",
+                          description="\n".join(lineas), color=color)
+    embed.set_footer(text=f"{partidas} partidas anunciadas en el mes · cuenta las veces que salió {criterio} "
+                          "puntaje promedio)")
     return embed
 
 
@@ -798,7 +801,9 @@ async def veredicto_semanal():
     inicio_m, fin_m = mes_anterior(ahora)
     if ahora >= fin_m + timedelta(hours=VEREDICTO_HORA):
         await publicar_una_vez("ultimo_ranking_mensual", f"{inicio_m:%Y-%m}",
-                               lambda: armar_ranking_mensual(inicio_m, fin_m), "Ranking mensual")
+                               lambda: armar_ranking_mensual(inicio_m, fin_m, gano=False), "Ranking mensual")
+        await publicar_una_vez("ultimo_ranking_carreadores", f"{inicio_m:%Y-%m}",
+                               lambda: armar_ranking_mensual(inicio_m, fin_m, gano=True), "Ranking de carreadores")
 
 
 @veredicto_semanal.before_loop
